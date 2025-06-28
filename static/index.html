@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Splitwise Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <header class="sticky-header">
+        <div class="header-content">
+            <h1 id="groupName">Splitwise Group Dashboard</h1>
+            <div id="quickStats"></div>
+        </div>
+    </header>
+    <div class="container">
+        <div class="card" id="trend-card">
+            <section id="trend-section">
+                <h2>Monthly Spend Trend</h2>
+                <canvas id="monthlyTrendChart"></canvas>
+            </section>
+        </div>
+        <section id="month-range-section" class="card" style="margin-bottom: 18px;">
+            <div style="display:flex;align-items:center;justify-content:center;gap:24px;">
+                <label for="monthStartDropdown">Start Month:</label>
+                <select id="monthStartDropdown"></select>
+                <label for="monthEndDropdown">End Month:</label>
+                <select id="monthEndDropdown"></select>
+            </div>
+        </section>
+        <div class="card" id="category-cumulative-card">
+            <section id="category-cumulative">
+                <h2>Category-wise Cumulative Spends</h2>
+                <canvas id="categoryCumulativeChart"></canvas>
+            </section>
+        </div>
+        <div class="card" id="monthwise-card">
+            <section id="monthwise">
+                <h2>Monthwise Analysis</h2>
+                <canvas id="monthlyBarChart"></canvas>
+                <div class="vertical-stack">
+                    <canvas id="categoryBarChart"></canvas>
+                    <canvas id="categoryPieChart"></canvas>
+                    <div id="topExpenses"></div>
+                </div>
+            </section>
+        </div>
+        <div class="card" id="prediction-card">
+            <section id="prediction">
+                <h2>Prediction for Next 6 Months</h2>
+                <canvas id="predictionChart"></canvas>
+            </section>
+        </div>
+    </div>
+    <script src="/static/dashboard.js"></script>
+</body>
+</html> 

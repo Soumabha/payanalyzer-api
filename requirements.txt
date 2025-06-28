@@ -1,0 +1,5 @@
+splitwise==3.0.0
+openpyxl
+python-dotenv
+python-dateutil 
+numpy
