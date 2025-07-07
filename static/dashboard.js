@@ -153,6 +153,9 @@ document.addEventListener("DOMContentLoaded", function() {
         updateCategoryCumulativeChart(start, end, selectedCategory);
         updateMonthwiseBarChart(start, end, selectedCategory);
         loadMonthRangeDetail(start, end, selectedCategory);
+        const recurringLimitInput = document.getElementById('recurringLimit');
+        const recurringLimit = recurringLimitInput ? parseInt(recurringLimitInput.value, 10) : 3;
+        updateTopRecurringExpenses(start, end, selectedCategory, recurringLimit);
     }
 
     function updateMonthwiseBarChart(start, end, category) {
@@ -286,6 +289,33 @@ document.addEventListener("DOMContentLoaded", function() {
         if (category) url += `?category=${encodeURIComponent(category)}`;
         fetch(url).then(r => r.json()).then(expenses => {
             renderTopExpensesTable(expenses);
+        });
+    }
+
+    // Add after loadMonthRangeDetail and before Section 3: Prediction
+    function renderTopRecurringExpensesTable(expenses) {
+        let html = '<h3>Top Recurring Expenses</h3>';
+        if (!expenses.length) {
+            html += '<div>No recurring expenses for selected category/range.</div>';
+            const el = document.getElementById('topRecurringExpenses');
+            if (el) el.innerHTML = html;
+            return;
+        }
+        html += '<table><thead><tr><th>Description</th><th>Months</th><th>Count</th><th>Total</th><th>Avg/Occurrence</th></tr></thead><tbody>';
+        expenses.forEach(e => {
+            html += `<tr><td>${e.description}</td><td>${e.months}</td><td>${e.count}</td><td>₹${e.total.toLocaleString('en-IN', {minimumFractionDigits: 2})}</td><td>₹${e.avg_per_occurrence.toLocaleString('en-IN', {minimumFractionDigits: 2})}</td></tr>`;
+        });
+        html += '</tbody></table>';
+        const el = document.getElementById('topRecurringExpenses');
+        if (el) el.innerHTML = html;
+    }
+
+    function updateTopRecurringExpenses(start, end, category, limit) {
+        let url = `/api/top-recurring-expenses?start=${start}&end=${end}`;
+        if (category) url += `&category=${encodeURIComponent(category)}`;
+        if (limit) url += `&limit=${limit}`;
+        fetch(url).then(r => r.json()).then(expenses => {
+            renderTopRecurringExpensesTable(expenses);
         });
     }
 
@@ -464,5 +494,14 @@ document.addEventListener("DOMContentLoaded", function() {
             // fallback emoji for unknown category
             return '🗂️ ';
         }
+    }
+
+    // Add event listener for recurringLimit input
+    const recurringLimitInput = document.getElementById('recurringLimit');
+    if (recurringLimitInput) {
+        recurringLimitInput.addEventListener('change', () => {
+            let { start, end } = getSelectedRange();
+            updateTopRecurringExpenses(start, end, selectedCategory, parseInt(recurringLimitInput.value, 10));
+        });
     }
 });

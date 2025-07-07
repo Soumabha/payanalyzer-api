@@ -11,6 +11,8 @@ import calendar
 import numpy as np
 from dateutil.relativedelta import relativedelta
 import logging
+from nltk.stem import PorterStemmer
+import re
 
 app = FastAPI()
 
@@ -184,4 +186,71 @@ def get_categories():
     cur = conn.execute("SELECT DISTINCT category FROM expenses WHERE deleted_at IS NULL ORDER BY category ASC")
     categories = [row["category"] for row in cur.fetchall() if row["category"]]
     conn.close()
-    return {"categories": categories} 
+    return {"categories": categories}
+
+@app.get("/api/top-recurring-expenses")
+def get_top_recurring_expenses(
+    start: str = Query(None),
+    end: str = Query(None),
+    category: str = Query(None),
+    limit: int = Query(3, ge=1, le=50)
+):
+    # Use stemming to merge similar descriptions
+    conn = get_db_connection()
+    params = []
+    where_clauses = ["deleted_at IS NULL"]
+    if start:
+        where_clauses.append("strftime('%Y-%m', date) >= ?")
+        params.append(start)
+    if end:
+        where_clauses.append("strftime('%Y-%m', date) <= ?")
+        params.append(end)
+    if category:
+        where_clauses.append("category = ?")
+        params.append(category)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    sql = f"""
+        SELECT description, strftime('%Y-%m', date) as month, cost
+        FROM expenses
+        {where_sql}
+    """
+    cur = conn.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    # Stem and group descriptions
+    ps = PorterStemmer()
+    def stem_text(text):
+        # Lowercase, remove non-alphabetic, stem each word
+        words = re.findall(r'[a-zA-Z]+', (text or '').lower())
+        return ' '.join(ps.stem(w) for w in words)
+    grouped = {}
+    for row in rows:
+        stemmed = stem_text(row["description"])
+        if not stemmed:
+            continue
+        key = stemmed
+        if key not in grouped:
+            grouped[key] = {
+                "originals": set(),
+                "months": set(),
+                "count": 0,
+                "total": 0.0,
+                "description": row["description"]
+            }
+        grouped[key]["originals"].add(row["description"])
+        grouped[key]["months"].add(row["month"])
+        grouped[key]["count"] += 1
+        grouped[key]["total"] += float(row["cost"])
+    # Only keep those that appear in more than 1 month
+    merged = [
+        {
+            "description": ', '.join(sorted(list(g["originals"])))[:100],
+            "months": len(g["months"]),
+            "count": g["count"],
+            "total": g["total"],
+            "avg_per_occurrence": g["total"] / g["count"] if g["count"] else 0
+        }
+        for g in grouped.values() if len(g["months"]) > 1
+    ]
+    merged.sort(key=lambda x: x["total"], reverse=True)
+    return merged[:limit] 

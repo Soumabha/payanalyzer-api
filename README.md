@@ -8,7 +8,8 @@ A web dashboard for analyzing and visualizing your expenses, with category and d
 - Interactive dashboard for spend analysis
 - Filter by date range and category
 - Visualize monthly trends, category-wise spends, and top expenses
-- Predict next 6 months' spend using linear regression
+- View top recurring expenses (merged by similar description using stemming)
+- Predict next 6 months' spend using ARIMA (or linear regression)
 - Export all group expenses to Excel
 
 ---
@@ -69,7 +70,7 @@ uvicorn main:app --reload
 
 ### 2. Using the Dashboard
 - Use the filters at the top to select date range and category.
-- View monthly trends, category-wise spends, top 10 expenses, and predictions.
+- View monthly trends, category-wise spends, top 10 expenses, top recurring expenses (with configurable limit), and predictions.
 
 ### 3. Export All Expenses to Excel
 ```bash
@@ -100,6 +101,7 @@ splitwise_expenses.db  # SQLite database (auto-created)
 - The `.env` file and `splitwise_expenses.db` are **not** tracked by git (see `.gitignore`).
 - The dashboard only works for one Splitwise group at a time (set by `SPLITWISE_GROUP_NAME`).
 - For large groups, the initial sync may take a few minutes.
+- The Top Recurring Expenses section merges similar descriptions using stemming (NLTK's PorterStemmer). You may need to run `python -m nltk.downloader punkt` if you see NLTK errors.
 
 ---
 

@@ -3,3 +3,4 @@ openpyxl
 python-dotenv
 python-dateutil 
 numpy
+nltk
