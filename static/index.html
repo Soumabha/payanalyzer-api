@@ -15,20 +15,33 @@
         </div>
     </header>
     <div class="container">
+        <section id="filters-section" class="card" style="margin-bottom: 18px;">
+            <h3 class="filter-heading">Filters</h3>
+            <div class="filter-row">
+                <div class="filter-group">
+                    <div class="filter-group-title">Start Date</div>
+                    <select id="startYearDropdown"></select>
+                    <select id="startMonthDropdown"></select>
+                </div>
+                <div class="filter-group">
+                    <div class="filter-group-title">End Date</div>
+                    <select id="endYearDropdown"></select>
+                    <select id="endMonthDropdown"></select>
+                </div>
+                <div class="filter-group">
+                    <div class="filter-group-title">Category</div>
+                    <select id="categoryFilter">
+                        <option value="">All Categories</option>
+                    </select>
+                </div>
+            </div>
+        </section>
         <div class="card" id="trend-card">
             <section id="trend-section">
                 <h2>Monthly Spend Trend</h2>
                 <canvas id="monthlyTrendChart"></canvas>
             </section>
         </div>
-        <section id="month-range-section" class="card" style="margin-bottom: 18px;">
-            <div style="display:flex;align-items:center;justify-content:center;gap:24px;">
-                <label for="monthStartDropdown">Start Month:</label>
-                <select id="monthStartDropdown"></select>
-                <label for="monthEndDropdown">End Month:</label>
-                <select id="monthEndDropdown"></select>
-            </div>
-        </section>
         <div class="card" id="category-cumulative-card">
             <section id="category-cumulative">
                 <h2>Category-wise Cumulative Spends</h2>
@@ -40,8 +53,6 @@
                 <h2>Monthwise Analysis</h2>
                 <canvas id="monthlyBarChart"></canvas>
                 <div class="vertical-stack">
-                    <canvas id="categoryBarChart"></canvas>
-                    <canvas id="categoryPieChart"></canvas>
                     <div id="topExpenses"></div>
                 </div>
             </section>

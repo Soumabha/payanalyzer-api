@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from splitwise import Splitwise
@@ -10,6 +10,7 @@ from collections import defaultdict
 import calendar
 import numpy as np
 from dateutil.relativedelta import relativedelta
+import logging
 
 app = FastAPI()
 
@@ -44,14 +45,11 @@ def startup_event():
     offset = 0
     limit = 50
     while True:
-        batch = sObj.getExpenses(offset=offset, limit=limit, group_id=int(GROUP_ID))
+        batch = sObj.getExpenses(offset=offset, limit=limit, group_id=int(GROUP_ID), updated_after=latest_update)
         if not batch:
             break
         for exp in batch:
-            # Only insert if new or updated
-            exp_updated = exp.getUpdatedAt() or exp.getDate() or datetime.now().isoformat()
-            if not latest_update or exp_updated > latest_update:
-                upsert_expense(exp)
+            upsert_expense(exp)
         if len(batch) < limit:
             break
         offset += limit
@@ -88,22 +86,26 @@ def get_stats():
     }
 
 @app.get("/api/monthly")
-def get_monthly():
+def get_monthly(start: str = Query(None), end: str = Query(None), category: str = Query(None)):
+    logging.basicConfig(level=logging.INFO)
     conn = get_db_connection()
-    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses GROUP BY month ORDER BY month DESC LIMIT 6")
+    params = []
+    where_clauses = ["deleted_at IS NULL"]
+    if start:
+        where_clauses.append("strftime('%Y-%m', date) >= ?")
+        params.append(start)
+    if end:
+        where_clauses.append("strftime('%Y-%m', date) <= ?")
+        params.append(end)
+    if category:
+        where_clauses.append("category = ?")
+        params.append(category)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    sql = f"SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses {where_sql} GROUP BY month ORDER BY month ASC"
+    cur = conn.execute(sql, params)
     data = [{"month": row["month"], "total": row["total"]} for row in cur.fetchall()]
     conn.close()
     return data[::-1]  # Return in chronological order
-
-@app.get("/api/monthly/{month}")
-def get_month_detail(month: str):
-    conn = get_db_connection()
-    cur = conn.execute("SELECT category, SUM(cost) as total FROM expenses WHERE strftime('%Y-%m', date) = ? AND deleted_at IS NULL GROUP BY category ORDER BY total DESC", (month,))
-    categories = [{"category": row["category"], "total": row["total"]} for row in cur.fetchall()]
-    cur2 = conn.execute("SELECT * FROM expenses WHERE strftime('%Y-%m', date) = ? AND deleted_at IS NULL ORDER BY date DESC", (month,))
-    expenses = [dict(row) for row in cur2.fetchall()]
-    conn.close()
-    return {"categories": categories, "expenses": expenses}
 
 @app.get("/api/predict")
 def get_prediction():
@@ -130,38 +132,24 @@ def get_prediction():
     return {"prediction": prediction}
 
 @app.get("/api/category-totals")
-def get_category_totals(start: str = Query(None), end: str = Query(None)):
+def get_category_totals(start: str = Query(None), end: str = Query(None), category: str = Query(None)):
     conn = get_db_connection()
+    params = []
+    where_clauses = ["deleted_at IS NULL"]
     if start and end:
-        cur = conn.execute("""
-            SELECT category, SUM(cost) as total FROM expenses
-            WHERE strftime('%Y-%m', date) >= ? AND strftime('%Y-%m', date) <= ? AND deleted_at IS NULL
-            GROUP BY category ORDER BY total DESC
-        """, (start, end))
-    else:
-        cur = conn.execute("SELECT category, SUM(cost) as total FROM expenses WHERE deleted_at IS NULL GROUP BY category ORDER BY total DESC")
+        where_clauses.append("strftime('%Y-%m', date) >= ?")
+        params.append(start)
+        where_clauses.append("strftime('%Y-%m', date) <= ?")
+        params.append(end)
+    if category:
+        where_clauses.append("category = ?")
+        params.append(category)
+    where_sql = " AND ".join(where_clauses)
+    sql = f"SELECT category, SUM(cost) as total FROM expenses WHERE {where_sql} GROUP BY category ORDER BY total DESC"
+    cur = conn.execute(sql, params)
     data = [{"category": row["category"], "total": row["total"]} for row in cur.fetchall()]
     conn.close()
     return data
-
-@app.get("/api/monthly-range/{start}/{end}")
-def get_month_range_detail(start: str, end: str):
-    conn = get_db_connection()
-    # Get all months between start and end (inclusive)
-    cur = conn.execute("""
-        SELECT category, SUM(cost) as total FROM expenses
-        WHERE strftime('%Y-%m', date) >= ? AND strftime('%Y-%m', date) <= ? AND deleted_at IS NULL
-        GROUP BY category ORDER BY total DESC
-    """, (start, end))
-    categories = [{"category": row["category"], "total": row["total"]} for row in cur.fetchall()]
-    cur2 = conn.execute("""
-        SELECT * FROM expenses
-        WHERE strftime('%Y-%m', date) >= ? AND strftime('%Y-%m', date) <= ? AND deleted_at IS NULL
-        ORDER BY date DESC
-    """, (start, end))
-    expenses = [dict(row) for row in cur2.fetchall()]
-    conn.close()
-    return {"categories": categories, "expenses": expenses}
 
 @app.get("/api/monthly-trend")
 def get_monthly_trend():
@@ -172,13 +160,28 @@ def get_monthly_trend():
     return data
 
 @app.get("/api/top-expenses/{start}/{end}")
-def get_top_expenses(start: str, end: str, limit: int = Query(10, ge=1, le=100)):
+def get_top_expenses(start: str, end: str, limit: int = Query(10, ge=1, le=100), category: str = Query(None)):
     conn = get_db_connection()
-    cur = conn.execute("""
+    params = [start, end]
+    where_clauses = ["strftime('%Y-%m', date) >= ?", "strftime('%Y-%m', date) <= ?", "deleted_at IS NULL"]
+    if category:
+        where_clauses.append("category = ?")
+        params.append(category)
+    where_sql = " AND ".join(where_clauses)
+    sql = f"""
         SELECT * FROM expenses
-        WHERE strftime('%Y-%m', date) >= ? AND strftime('%Y-%m', date) <= ? AND deleted_at IS NULL
+        WHERE {where_sql}
         ORDER BY cost DESC, date DESC LIMIT ?
-    """, (start, end, limit))
-    expenses = [dict(row) for row in cur.fetchall()]
+    """
+    params.append(limit)
+    expenses = [dict(row) for row in conn.execute(sql, params).fetchall()]
     conn.close()
-    return expenses 
+    return expenses
+
+@app.get("/api/categories")
+def get_categories():
+    conn = get_db_connection()
+    cur = conn.execute("SELECT DISTINCT category FROM expenses WHERE deleted_at IS NULL ORDER BY category ASC")
+    categories = [row["category"] for row in cur.fetchall() if row["category"]]
+    conn.close()
+    return {"categories": categories} 

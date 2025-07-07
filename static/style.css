@@ -143,4 +143,79 @@ tr:nth-child(even) {
     .header-content { flex-direction: column; gap: 10px; }
     .stat-card { min-width: unset; width: 100%; justify-content: flex-start; margin: 4px 0; }
     #quickStats { flex-direction: column; gap: 8px; }
+}
+#filters-section {
+    padding: 18px 24px;
+    margin-bottom: 24px;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    max-width: 1100px;
+    margin-left: auto;
+    margin-right: auto;
+}
+#filters-section .filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 24px 32px;
+}
+#filters-section label {
+    font-weight: 600;
+    margin-right: 6px;
+    margin-bottom: 2px;
+    display: block;
+    color: #222;
+}
+#filters-section .filter-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 140px;
+    margin-right: 12px;
+    margin-bottom: 0;
+    background: none;
+    border: none;
+    padding: 0 8px;
+}
+#filters-section .filter-group label {
+    margin-bottom: 2px;
+    margin-top: 2px;
+}
+#filters-section select {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    font-size: 1em;
+    background: #f8f9fa;
+    margin-top: 2px;
+    min-width: 90px;
+}
+.filter-heading {
+    font-size: 1.25em;
+    font-weight: 700;
+    margin-bottom: 18px;
+    color: #2c3e50;
+    letter-spacing: 0.5px;
+    text-align: left;
+}
+.filter-group-title {
+    font-size: 1.08em;
+    font-weight: 600;
+    margin-bottom: 6px;
+    margin-top: 2px;
+    color: #34495e;
+    letter-spacing: 0.2px;
+}
+@media (max-width: 900px) {
+    .filter-heading {
+        text-align: center;
+    }
+    #filters-section .filter-group {
+        min-width: unset;
+        width: 100%;
+        margin-right: 0;
+        padding: 0;
+    }
 } 

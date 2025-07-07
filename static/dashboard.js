@@ -1,26 +1,18 @@
 document.addEventListener("DOMContentLoaded", function() {
-    // Section 1: Cumulative Stats
-    fetch("/api/stats").then(r => r.json()).then(data => {
-        document.getElementById("stats").innerHTML = `
-            <p><strong>Total Expenses:</strong> ${data.total_expenses}</p>
-            <p><strong>Total Spent:</strong> ₹${data.total_spent.toLocaleString('en-IN', {minimumFractionDigits: 2})}</p>
-            <p><strong>Average Monthly Expense:</strong> ₹${data.average_expense.toLocaleString('en-IN', {minimumFractionDigits: 2})}</p>
-            <p><strong>Date Range:</strong> ${data.date_range.start} to ${data.date_range.end}</p>
-        `;
-        if (data.group_name) {
-            document.getElementById('groupName').textContent = data.group_name;
-        }
-    });
-
     // Sticky header quick stats
     fetch("/api/stats").then(r => r.json()).then(data => {
         const quickStats = document.getElementById("quickStats");
+        function formatMonth(dateStr) {
+            if (!dateStr) return '';
+            const d = new Date(dateStr);
+            return d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+        }
         if (quickStats) {
             quickStats.innerHTML = `
-                <div class="stat-card"><span>Total</span><br>₹${data.total_spent.toLocaleString('en-IN', {minimumFractionDigits: 2})}</div>
-                <div class="stat-card"><span>Avg/Month</span><br>₹${data.average_expense.toLocaleString('en-IN', {minimumFractionDigits: 2})}</div>
-                <div class="stat-card"><span>Range</span><br>${data.date_range.start} to ${data.date_range.end}</div>
-                <div class="stat-card"><span>Expenses</span><br>${data.total_expenses}</div>
+                <div class="stat-card"><span>Total Spent</span><br><strong>₹${data.total_spent.toLocaleString('en-IN', {minimumFractionDigits: 2})}</strong></div>
+                <div class="stat-card"><span>Average per Month</span><br><strong>₹${data.average_expense.toLocaleString('en-IN', {minimumFractionDigits: 2})}</strong></div>
+                <div class="stat-card"><span>Date Range</span><br><strong>${formatMonth(data.date_range.start)} - ${formatMonth(data.date_range.end)}</strong></div>
+                <div class="stat-card"><span>Number of Expenses</span><br><strong>${data.total_expenses}</strong></div>
             `;
         }
         if (data.group_name) {
@@ -29,77 +21,187 @@ document.addEventListener("DOMContentLoaded", function() {
         }
     });
 
-    // Section 2: Monthwise Bar Chart
-    let allMonths = [];
-    let monthsData = [];
+    // Populate year and month dropdowns
+    const years = [2023, 2024, 2025];
+    const monthsList = [
+        { value: '01', name: 'Jan' },
+        { value: '02', name: 'Feb' },
+        { value: '03', name: 'Mar' },
+        { value: '04', name: 'Apr' },
+        { value: '05', name: 'May' },
+        { value: '06', name: 'Jun' },
+        { value: '07', name: 'Jul' },
+        { value: '08', name: 'Aug' },
+        { value: '09', name: 'Sep' },
+        { value: '10', name: 'Oct' },
+        { value: '11', name: 'Nov' },
+        { value: '12', name: 'Dec' }
+    ];
+    function populateDropdown(id, options, valueKey = 'value', textKey = 'name') {
+        const dropdown = document.getElementById(id);
+        if (!dropdown) return;
+        dropdown.innerHTML = '';
+        options.forEach(opt => {
+            const option = document.createElement('option');
+            option.value = opt[valueKey] || opt;
+            option.textContent = opt[textKey] || opt;
+            dropdown.appendChild(option);
+        });
+    }
+    populateDropdown('startYearDropdown', years.map(y => ({ value: y, name: y })));
+    populateDropdown('endYearDropdown', years.map(y => ({ value: y, name: y })));
+    populateDropdown('startMonthDropdown', monthsList);
+    populateDropdown('endMonthDropdown', monthsList);
+    // Set defaults
+    const startYearDropdown = document.getElementById('startYearDropdown');
+    const startMonthDropdown = document.getElementById('startMonthDropdown');
+    const endYearDropdown = document.getElementById('endYearDropdown');
+    const endMonthDropdown = document.getElementById('endMonthDropdown');
+    if (startYearDropdown) startYearDropdown.value = '2023';
+    if (startMonthDropdown) startMonthDropdown.value = '01';
+    const now = new Date();
+    const currentYearStr = now.getFullYear().toString();
+    const currentMonthStr = (now.getMonth() + 1).toString().padStart(2, '0');
+    if (endYearDropdown) endYearDropdown.value = currentYearStr;
+    if (endMonthDropdown) endMonthDropdown.value = currentMonthStr;
 
-    // Fetch all months for dropdowns and initialize dashboard
-    fetch("/api/monthly").then(r => r.json()).then(months => {
-        allMonths = months.map(m => m.month);
-        monthsData = months;
-        const startDropdown = document.getElementById('monthStartDropdown');
-        const endDropdown = document.getElementById('monthEndDropdown');
-        if (!startDropdown || !endDropdown) return;
-        startDropdown.innerHTML = '';
-        endDropdown.innerHTML = '';
-        months.forEach(m => {
-            const opt1 = document.createElement('option');
-            opt1.value = m.month;
-            opt1.textContent = m.month;
-            startDropdown.appendChild(opt1);
-            const opt2 = document.createElement('option');
-            opt2.value = m.month;
-            opt2.textContent = m.month;
-            endDropdown.appendChild(opt2);
-        });
-        // Default: start from 2021-07 if available, else earliest; end is latest
-        let defaultStart = months.find(m => m.month === '2021-07') ? '2021-07' : months[0].month;
-        let defaultEnd = months[months.length-1].month;
-        startDropdown.value = defaultStart;
-        endDropdown.value = defaultEnd;
-        updateDashboardForRange(startDropdown.value, endDropdown.value);
-        startDropdown.addEventListener('change', () => {
-            let start = startDropdown.value;
-            let end = endDropdown.value;
-            if (allMonths.indexOf(start) > allMonths.indexOf(end)) {
-                endDropdown.value = start;
+    function getSelectedRange() {
+        const startYear = startYearDropdown.value;
+        const startMonth = startMonthDropdown.value;
+        const endYear = endYearDropdown.value;
+        const endMonth = endMonthDropdown.value;
+        // Snap end to current month if selected
+        const now = new Date();
+        const currentYear = now.getFullYear().toString();
+        const currentMonth = (now.getMonth() + 1).toString().padStart(2, '0');
+        let end = `${endYear}-${endMonth}`;
+        if (endYear === currentYear && endMonth === currentMonth) {
+            end = `${currentYear}-${currentMonth}`; // Snap to current month
+        }
+        return {
+            start: `${startYear}-${startMonth}`,
+            end: end
+        };
+    }
+    [startYearDropdown, startMonthDropdown, endYearDropdown, endMonthDropdown].forEach(drop => {
+        if (drop) drop.addEventListener('change', () => {
+            let { start, end } = getSelectedRange();
+            // Ensure start <= end
+            if (start > end) {
+                // If start > end, set end = start
+                endYearDropdown.value = startYearDropdown.value;
+                endMonthDropdown.value = startMonthDropdown.value;
                 end = start;
-            }
-            updateDashboardForRange(start, end);
-        });
-        endDropdown.addEventListener('change', () => {
-            let start = startDropdown.value;
-            let end = endDropdown.value;
-            if (allMonths.indexOf(start) > allMonths.indexOf(end)) {
-                startDropdown.value = end;
-                start = end;
             }
             updateDashboardForRange(start, end);
         });
     });
 
-    function updateDashboardForRange(start, end) {
-        updateCategoryCumulativeChart(start, end);
-        updateMonthwiseBarChart(start, end);
-        loadMonthRangeDetail(start, end);
+    // Section 2: Monthwise Bar Chart
+    let allMonths = [];
+    let monthsData = [];
+
+    // Helper to generate all months between two dates (inclusive)
+    function getAllMonthsBetween(start, end) {
+        const result = [];
+        let current = new Date(start.getFullYear(), start.getMonth(), 1);
+        const last = new Date(end.getFullYear(), end.getMonth(), 1);
+        while (current <= last) {
+            result.push(current.toISOString().slice(0, 7));
+            current.setMonth(current.getMonth() + 1);
+        }
+        return result;
     }
 
-    function updateMonthwiseBarChart(start, end) {
-        const startIdx = allMonths.indexOf(start);
-        const endIdx = allMonths.indexOf(end);
-        const rangeMonths = monthsData.slice(startIdx, endIdx + 1);
+    // Fetch all months for dashboard logic
+    fetch("/api/monthly").then(r => r.json()).then(months => {
+        // allMonths is now just the months present in the backend response, in order
+        allMonths = months.map(m => m.month);
+        // Map monthsData to all months, filling missing with 0 (shouldn't be needed, but keep for safety)
+        const monthTotals = {};
+        months.forEach(m => { monthTotals[m.month] = m.total; });
+        monthsData = allMonths.map(m => ({ month: m, total: monthTotals[m] || 0 }));
+        // Set initial dashboard
+        let { start, end } = getSelectedRange();
+        updateDashboardForRange(start, end);
+    });
+
+    // Fetch and populate category filter
+    fetch('/api/categories').then(r => r.json()).then(data => {
+        const filter = document.getElementById('categoryFilter');
+        if (filter && data.categories) {
+            data.categories.forEach(cat => {
+                const opt = document.createElement('option');
+                opt.value = cat;
+                opt.textContent = cat;
+                filter.appendChild(opt);
+            });
+        }
+    });
+
+    let selectedCategory = '';
+    const categoryFilter = document.getElementById('categoryFilter');
+    if (categoryFilter) {
+        categoryFilter.addEventListener('change', () => {
+            selectedCategory = categoryFilter.value;
+            let { start, end } = getSelectedRange();
+            updateDashboardForRange(start, end);
+        });
+    }
+
+    function updateDashboardForRange(start, end) {
+        updateCategoryCumulativeChart(start, end, selectedCategory);
+        updateMonthwiseBarChart(start, end, selectedCategory);
+        loadMonthRangeDetail(start, end, selectedCategory);
+    }
+
+    function updateMonthwiseBarChart(start, end, category) {
+        let url = `/api/monthly?start=${start}&end=${end}`;
+        if (category) url += `&category=${encodeURIComponent(category)}`;
+        fetch(url).then(r => r.json()).then(filtered => {
+            if (!filtered.length) {
+                renderMonthwiseBarChart([]);
+                return;
+            }
+            // Generate all months between start and end
+            function getAllMonthsBetween(start, end) {
+                const result = [];
+                let current = new Date(start + '-01');
+                const last = new Date(end + '-01');
+                while (current <= last) {
+                    result.push(current.toISOString().slice(0, 7));
+                    current.setMonth(current.getMonth() + 1);
+                }
+                return result;
+            }
+            const allMonthStrings = getAllMonthsBetween(start, end);
+            // Map backend data to this range, filling missing with 0
+            const monthTotals = {};
+            filtered.forEach(m => { monthTotals[m.month] = m.total; });
+            const mapped = allMonthStrings.map(m => ({ month: m, total: monthTotals[m] || 0 }));
+            renderMonthwiseBarChart(mapped);
+        });
+    }
+
+    function renderMonthwiseBarChart(data) {
         const ctx = document.getElementById('monthlyBarChart')?.getContext('2d');
         if (!ctx) return;
         if (window.monthlyBarChartInstance && typeof window.monthlyBarChartInstance.destroy === 'function') {
             window.monthlyBarChartInstance.destroy();
         }
+        if (!data.length) {
+            ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            ctx.font = '16px Arial';
+            ctx.fillText('No data for selected category/range', 20, 40);
+            return;
+        }
         window.monthlyBarChartInstance = new Chart(ctx, {
             type: 'bar',
             data: {
-                labels: rangeMonths.map(m => m.month),
+                labels: data.map(m => m.month),
                 datasets: [{
                     label: 'Total Spend (INR)',
-                    data: rangeMonths.map(m => m.total),
+                    data: data.map(m => m.total),
                     backgroundColor: 'rgba(54, 162, 235, 0.5)'
                 }]
             },
@@ -160,76 +262,30 @@ document.addEventListener("DOMContentLoaded", function() {
         });
     });
 
-    // Category pie chart for selected range
-    function renderCategoryPieChart(categories) {
-        const ctx = document.getElementById('categoryPieChart')?.getContext('2d');
-        if (!ctx) return;
-        if (window.categoryPieChartInstance && typeof window.categoryPieChartInstance.destroy === 'function') {
-            window.categoryPieChartInstance.destroy();
-        }
-        window.categoryPieChartInstance = new Chart(ctx, {
-            type: 'pie',
-            data: {
-                labels: categories.map(c => c.category),
-                datasets: [{
-                    data: categories.map(c => c.total),
-                    backgroundColor: categories.map((_, i) => `hsl(${i * 37 % 360}, 70%, 60%)`)
-                }]
-            },
-            options: {
-                plugins: {
-                    legend: { display: true },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return `${context.label}: ₹${context.parsed.toLocaleString('en-IN', {minimumFractionDigits: 2})}`;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
     // Top N expenses table for selected range (now top 10)
-    function renderTopExpensesTable(start, end) {
-        fetch(`/api/top-expenses/${start}/${end}?limit=10`).then(r => r.json()).then(data => {
-            let html = '<h3>Top 10 Expenses</h3>';
-            html += '<table><thead><tr><th>Date</th><th>Description</th><th>Cost</th><th>Category</th></tr></thead><tbody>';
-            data.forEach(e => {
-                html += `<tr><td>${e.date}</td><td>${e.description}</td><td>₹${e.cost.toLocaleString('en-IN', {minimumFractionDigits: 2})}</td><td>${getCategoryIconHtml(e.category)}${e.category}</td></tr>`;
-            });
-            html += '</tbody></table>';
+    function renderTopExpensesTable(expenses) {
+        let html = '<h3>Top 10 Expenses</h3>';
+        if (!expenses.length) {
+            html += '<div>No expenses for selected category/range.</div>';
             const el = document.getElementById('topExpenses');
             if (el) el.innerHTML = html;
+            return;
+        }
+        html += '<table><thead><tr><th>Date</th><th>Description</th><th>Cost</th><th>Category</th></tr></thead><tbody>';
+        expenses.slice(0, 10).forEach(e => {
+            html += `<tr><td>${e.date}</td><td>${e.description}</td><td>₹${e.cost.toLocaleString('en-IN', {minimumFractionDigits: 2})}</td><td>${getCategoryIconHtml(e.category)}${e.category}</td></tr>`;
         });
+        html += '</tbody></table>';
+        const el = document.getElementById('topExpenses');
+        if (el) el.innerHTML = html;
     }
 
     // Patch the loadMonthRangeDetail function to use new charts/tables
-    function loadMonthRangeDetail(start, end) {
-        fetch(`/api/monthly-range/${start}/${end}`).then(r => r.json()).then(data => {
-            const ctx = document.getElementById('categoryBarChart')?.getContext('2d');
-            if (!ctx) return;
-            if (window.categoryBarChartInstance && typeof window.categoryBarChartInstance.destroy === 'function') {
-                window.categoryBarChartInstance.destroy();
-            }
-            window.categoryBarChartInstance = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: data.categories.map(c => c.category),
-                    datasets: [{
-                        label: 'Spend by Category',
-                        data: data.categories.map(c => c.total),
-                        backgroundColor: 'rgba(255, 99, 132, 0.5)'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: { legend: { display: false } }
-                }
-            });
-            renderCategoryPieChart(data.categories);
-            renderTopExpensesTable(start, end);
+    function loadMonthRangeDetail(start, end, category) {
+        let url = `/api/top-expenses/${start}/${end}`;
+        if (category) url += `?category=${encodeURIComponent(category)}`;
+        fetch(url).then(r => r.json()).then(expenses => {
+            renderTopExpensesTable(expenses);
         });
     }
 
@@ -338,12 +394,23 @@ document.addEventListener("DOMContentLoaded", function() {
     };
 
     // Section: Category-wise Cumulative Spends
-    function updateCategoryCumulativeChart(start, end) {
-        fetch(`/api/category-totals?start=${start}&end=${end}`).then(r => r.json()).then(data => {
+    function updateCategoryCumulativeChart(start, end, category) {
+        let url = `/api/category-totals?start=${start}&end=${end}`;
+        if (category) url += `&category=${encodeURIComponent(category)}`;
+        fetch(url).then(r => r.json()).then(data => {
+            if (category) {
+                data = data.filter(c => c.category === category);
+            }
             const ctx = document.getElementById('categoryCumulativeChart')?.getContext('2d');
             if (!ctx) return;
             if (window.categoryCumulativeChartInstance && typeof window.categoryCumulativeChartInstance.destroy === 'function') {
                 window.categoryCumulativeChartInstance.destroy();
+            }
+            if (!data.length) {
+                ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+                ctx.font = '16px Arial';
+                ctx.fillText('No data for selected category/range', 20, 40);
+                return;
             }
             window.categoryCumulativeChartInstance = new Chart(ctx, {
                 type: 'bar',
@@ -398,4 +465,4 @@ document.addEventListener("DOMContentLoaded", function() {
             return '🗂️ ';
         }
     }
-}); 
+});
