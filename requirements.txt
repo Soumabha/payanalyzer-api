@@ -1,6 +1,24 @@
+# Core Splitwise API integration
 splitwise==3.0.0
-openpyxl
-python-dotenv
-python-dateutil 
-numpy
-nltk
+
+# FastAPI web framework and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Excel file handling
+openpyxl>=3.1.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Date and time utilities
+python-dateutil>=2.8.0
+
+# Numerical computing
+numpy>=1.24.0
+
+# Natural language processing (for stemming)
+nltk>=3.8.0
+
+# Static file serving (included with FastAPI)
+# fastapi.staticfiles is part of FastAPI
