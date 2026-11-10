@@ -1,10 +1,24 @@
 import os
-from fastapi import FastAPI, Query, Request
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from splitwise import Splitwise
+from splitwise.exception import SplitwiseBaseException
+from requests.exceptions import RequestException
 from dotenv import load_dotenv
 from splitwise_data import create_schema, upsert_expense, get_latest_expense_update, get_db_connection
+from projections import run_projection
+from projection_data import (
+    create_projection_schema,
+    get_assumptions,
+    save_assumptions,
+    get_extra_income,
+    get_extra_income_by_year,
+    add_extra_income,
+    delete_extra_income,
+)
 from datetime import datetime, timedelta
 from collections import defaultdict
 import calendar
@@ -13,6 +27,9 @@ from dateutil.relativedelta import relativedelta
 import logging
 from nltk.stem import PorterStemmer
 import re
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("splitapi")
 
 app = FastAPI()
 
@@ -30,32 +47,98 @@ if not GROUP_NAME:
     raise Exception("SPLITWISE_GROUP_NAME environment variable must be set.")
 GROUP_ID = None  # Will be set at startup
 
+class AssumptionsUpdate(BaseModel):
+    current_annual_expense_lakhs: Optional[float] = None
+    inflation_pct: Optional[float] = None
+    education_inflation_pct: Optional[float] = None
+    healthcare_inflation_pct: Optional[float] = None
+    kids_expense_start_year: Optional[int] = None
+    kids_school_start_age: Optional[int] = None
+    kids_expense_end_year: Optional[int] = None
+    parents_expense_start_year: Optional[int] = None
+    parents_expense_end_year: Optional[int] = None
+    loan_outstanding_lakhs: Optional[float] = None
+    annual_emi_lakhs: Optional[float] = None
+    loan_end_year: Optional[int] = None
+    rental_income_lakhs: Optional[float] = None
+    rent_increase_pct: Optional[float] = None
+    current_annual_salary_lakhs: Optional[float] = None
+    salary_growth_pct: Optional[float] = None
+    retirement_year: Optional[int] = None
+    starting_cash_lakhs: Optional[float] = None
+    equity_portfolio_lakhs: Optional[float] = None
+    equity_return_pct: Optional[float] = None
+    debt_portfolio_lakhs: Optional[float] = None
+    debt_return_pct: Optional[float] = None
+
+
+class ExtraIncomeEntry(BaseModel):
+    year: int
+    amount_lakhs: float
+    note: Optional[str] = None
+
+
 @app.on_event("startup")
 def startup_event():
-    global GROUP_ID
     create_schema()
-    sObj = Splitwise(CONSUMER_KEY, CONSUMER_SECRET, api_key=API_KEY)
-    # Find group ID by name
-    groups = sObj.getGroups()
-    for group in groups:
-        if group.getName() == GROUP_NAME:
-            GROUP_ID = group.getId()
-            break
-    if GROUP_ID is None:
-        raise Exception(f"Group '{GROUP_NAME}' not found for the current user.")
-    latest_update = get_latest_expense_update(int(GROUP_ID))
-    offset = 0
-    limit = 50
-    while True:
-        batch = sObj.getExpenses(offset=offset, limit=limit, group_id=int(GROUP_ID), updated_after=latest_update)
-        if not batch:
-            break
-        for exp in batch:
-            upsert_expense(exp)
-        if len(batch) < limit:
-            break
-        offset += limit
-    print(f"Splitwise expenses synced to SQLite for group '{GROUP_NAME}' (ID: {GROUP_ID}).")
+    create_projection_schema()
+    sync_splitwise_expenses()
+
+
+def sync_splitwise_expenses():
+    """Best-effort sync of Splitwise expenses into the local SQLite DB.
+
+    Splitwise access is NOT a hard requirement to run this app: all read
+    endpoints operate purely off the local SQLite DB, which can also be kept
+    up to date via manual imports (see pdf_import.py) when the Splitwise API
+    isn't reachable (e.g. no active Splitwise Pro subscription on the
+    registered app, no network, revoked token, etc). On any failure here we
+    log the reason and let the app continue starting up.
+    """
+    global GROUP_ID
+    if not (CONSUMER_KEY and CONSUMER_SECRET and API_KEY):
+        logger.warning(
+            "Splitwise initial sync not performed. Reason: one or more of "
+            "SPLITWISE_CONSUMER_KEY / SPLITWISE_CONSUMER_SECRET / API_KEY is not set."
+        )
+        return
+    try:
+        sObj = Splitwise(CONSUMER_KEY, CONSUMER_SECRET, api_key=API_KEY)
+        # Find group ID by name
+        groups = sObj.getGroups()
+        for group in groups:
+            if group.getName() == GROUP_NAME:
+                GROUP_ID = group.getId()
+                break
+        if GROUP_ID is None:
+            logger.warning(
+                f"Splitwise initial sync not performed. Reason: group '{GROUP_NAME}' "
+                "not found for the current user."
+            )
+            return
+        latest_update = get_latest_expense_update(int(GROUP_ID))
+        offset = 0
+        limit = 50
+        synced = 0
+        while True:
+            batch = sObj.getExpenses(offset=offset, limit=limit, group_id=int(GROUP_ID), updated_after=latest_update)
+            if not batch:
+                break
+            for exp in batch:
+                upsert_expense(exp)
+            synced += len(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        logger.info(
+            f"Splitwise expenses synced to SQLite for group '{GROUP_NAME}' (ID: {GROUP_ID}). "
+            f"{synced} expense(s) updated."
+        )
+    except SplitwiseBaseException as e:
+        reason = "; ".join(e.errors.get("base", [str(e)])) if getattr(e, "errors", None) else str(e)
+        logger.warning(f"Splitwise initial sync not performed. Reason: {reason}")
+    except RequestException as e:
+        logger.warning(f"Splitwise initial sync not performed. Reason: network error - {e}")
 
 @app.get("/")
 def root():
@@ -187,6 +270,46 @@ def get_categories():
     categories = [row["category"] for row in cur.fetchall() if row["category"]]
     conn.close()
     return {"categories": categories}
+
+@app.get("/projection")
+def projection_page():
+    return FileResponse("static/projection.html")
+
+@app.get("/api/fire-projection/assumptions")
+def get_fire_assumptions():
+    return {"assumptions": get_assumptions(), "extra_income": get_extra_income()}
+
+@app.put("/api/fire-projection/assumptions")
+def update_fire_assumptions(payload: AssumptionsUpdate):
+    partial_data = {k: v for k, v in payload.dict().items() if v is not None}
+    try:
+        updated = save_assumptions(partial_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"assumptions": updated}
+
+@app.get("/api/fire-projection/extra-income")
+def list_extra_income():
+    return get_extra_income()
+
+@app.post("/api/fire-projection/extra-income")
+def create_extra_income(entry: ExtraIncomeEntry):
+    add_extra_income(entry.year, entry.amount_lakhs, entry.note)
+    return get_extra_income()
+
+@app.delete("/api/fire-projection/extra-income/{year}")
+def remove_extra_income(year: int):
+    delete_extra_income(year)
+    return get_extra_income()
+
+@app.get("/api/fire-projection")
+def get_fire_projection(start_year: int = Query(2026), end_year: int = Query(2070)):
+    assumptions = get_assumptions()
+    extra_income = get_extra_income_by_year()
+    try:
+        return run_projection(assumptions, extra_income, start_year=start_year, end_year=end_year)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/top-recurring-expenses")
 def get_top_recurring_expenses(
