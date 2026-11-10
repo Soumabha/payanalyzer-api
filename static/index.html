@@ -3,78 +3,130 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Splitwise Dashboard</title>
+    <title>Splitwise Insight</title>
+    <!-- Add Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- Add FontAwesome before style.css so it loads faster -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
     <link rel="stylesheet" href="/static/style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <header class="sticky-header">
         <div class="header-content">
-            <h1 id="groupName">Splitwise Group Dashboard</h1>
-            <div id="quickStats"></div>
+            <h1 id="groupName"><i class="fa-solid fa-chart-pie"></i> Splitwise</h1>
+            <nav class="page-nav">
+                <a href="/" class="nav-link active"><i class="fa-solid fa-chart-pie"></i> Expenses</a>
+                <a href="/projection" class="nav-link"><i class="fa-solid fa-seedling"></i> Wealth Projection</a>
+            </nav>
+            <div id="quickStats">
+                <!-- Stats injected from JS based on active filters -->
+            </div>
         </div>
     </header>
+
     <div class="container">
-        <section id="filters-section" class="card" style="margin-bottom: 18px;">
-            <h3 class="filter-heading">Filters</h3>
-            <div class="filter-row">
-                <div class="filter-group">
-                    <div class="filter-group-title">Start Date</div>
-                    <select id="startYearDropdown"></select>
-                    <select id="startMonthDropdown"></select>
+        <!-- Dashboard Grid Layout -->
+        <div class="dashboard-grid">
+            
+            <section id="filters-section" class="card">
+                <h3 class="filter-heading"><i class="fa-solid fa-filter"></i> Filters</h3>
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <div class="filter-group-title">Start Date</div>
+                        <div class="filter-controls">
+                            <select id="startYearDropdown"></select>
+                            <select id="startMonthDropdown"></select>
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <div class="filter-group-title">End Date</div>
+                        <div class="filter-controls">
+                            <select id="endYearDropdown"></select>
+                            <select id="endMonthDropdown"></select>
+                        </div>
+                    </div>
+                    <div class="filter-group">
+                        <div class="filter-group-title">Category</div>
+                        <div class="filter-controls">
+                            <select id="categoryFilter">
+                                <option value="">All Categories</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="filter-group" style="justify-content: flex-end;">
+                        <button id="resetFiltersBtn" title="Reset all filters" style="background: var(--bg-secondary); border: 1px solid var(--border-color); color: #fff; padding: 10px 14px; border-radius: 8px; cursor: pointer; transition: 0.3s;">
+                            <i class="fa-solid fa-rotate-right"></i>
+                        </button>
+                    </div>
                 </div>
-                <div class="filter-group">
-                    <div class="filter-group-title">End Date</div>
-                    <select id="endYearDropdown"></select>
-                    <select id="endMonthDropdown"></select>
-                </div>
-                <div class="filter-group">
-                    <div class="filter-group-title">Category</div>
-                    <select id="categoryFilter">
-                        <option value="">All Categories</option>
-                    </select>
-                </div>
+            </section>
+
+            <div class="card" id="trend-card">
+                <section id="trend-section">
+                    <h2><i class="fa-solid fa-chart-line"></i> Overall Spend Trend</h2>
+                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Click a data point to drill down into that specific month.</div>
+                    <div class="chart-container">
+                        <canvas id="monthlyTrendChart"></canvas>
+                    </div>
+                </section>
             </div>
-        </section>
-        <div class="card" id="trend-card">
-            <section id="trend-section">
-                <h2>Monthly Spend Trend</h2>
-                <canvas id="monthlyTrendChart"></canvas>
-            </section>
-        </div>
-        <div class="card" id="category-cumulative-card">
-            <section id="category-cumulative">
-                <h2>Category-wise Cumulative Spends</h2>
-                <canvas id="categoryCumulativeChart"></canvas>
-            </section>
-        </div>
-        <div class="card" id="monthwise-card">
-            <section id="monthwise">
-                <h2>Monthwise Analysis</h2>
-                <canvas id="monthlyBarChart"></canvas>
-                <div class="vertical-stack">
-                    <div id="topExpenses"></div>
-                </div>
-            </section>
-        </div>
-        <div class="card" id="prediction-card">
-            <section id="prediction">
-                <h2>Prediction for Next 6 Months</h2>
-                <canvas id="predictionChart"></canvas>
-            </section>
-        </div>
-        <div class="card" id="recurring-card">
-            <section id="recurring-section">
-                <h2>Top Recurring Expenses</h2>
-                <div style="margin-bottom: 10px;">
-                    <label for="recurringLimit">Show top </label>
-                    <input type="number" id="recurringLimit" min="1" max="50" value="3" style="width: 50px;">
-                    <span> recurring expenses</span>
-                </div>
-                <div id="topRecurringExpenses"></div>
-            </section>
+
+            <div class="card" id="prediction-card">
+                <section id="prediction">
+                    <h2><i class="fa-solid fa-wand-magic-sparkles"></i> 6 Month Forecast</h2>
+                    <div class="chart-container">
+                        <canvas id="predictionChart"></canvas>
+                    </div>
+                </section>
+            </div>
+
+            <div class="card" id="category-cumulative-card">
+                <section id="category-cumulative">
+                    <h2><i class="fa-solid fa-chart-bar"></i> Category Breakdown</h2>
+                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Click a bar to filter everything by that category.</div>
+                    <div class="chart-container">
+                        <canvas id="categoryCumulativeChart"></canvas>
+                    </div>
+                </section>
+            </div>
+
+            <div class="card" id="monthwise-card">
+                <section id="monthwise">
+                    <h2><i class="fa-solid fa-calendar-days"></i> Spend by Month</h2>
+                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Reflects currently applied filters. Click any bar to drill down.</div>
+                    <div class="chart-container">
+                        <canvas id="monthlyBarChart"></canvas>
+                    </div>
+                </section>
+            </div>
+
+            <div class="card" id="recurring-card">
+                <section id="recurring-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                        <h2><i class="fa-solid fa-repeat"></i> Top Recurring Expenses</h2>
+                        <div class="filter-group" style="flex-direction: row; align-items: center; margin-bottom: 20px;">
+                            <label for="recurringLimit" class="filter-group-title" style="margin: 0; color: #fff;">Show Top:</label>
+                            <input type="number" id="recurringLimit" min="1" max="50" value="5" style="width: 70px;">
+                        </div>
+                    </div>
+                    <div id="topRecurringExpenses" class="table-container"></div>
+                </section>
+            </div>
+
+            <div class="card" id="top-expenses-card" style="grid-column: span 12;">
+                <section id="top-expenses-section">
+                    <h2><i class="fa-solid fa-money-bill-transfer"></i> Top 10 Expenses</h2>
+                    <div id="topExpenses" class="table-container"></div>
+                </section>
+            </div>
+
         </div>
     </div>
+
     <script src="/static/dashboard.js"></script>
 </body>
-</html> 
+</html>

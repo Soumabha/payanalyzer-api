@@ -107,7 +107,7 @@ def get_monthly(start: str = Query(None), end: str = Query(None), category: str 
     cur = conn.execute(sql, params)
     data = [{"month": row["month"], "total": row["total"]} for row in cur.fetchall()]
     conn.close()
-    return data[::-1]  # Return in chronological order
+    return data
 
 @app.get("/api/predict")
 def get_prediction():
