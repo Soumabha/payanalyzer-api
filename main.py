@@ -9,7 +9,7 @@ from splitwise.exception import SplitwiseBaseException
 from requests.exceptions import RequestException
 from dotenv import load_dotenv
 from splitwise_data import create_schema, upsert_expense, get_latest_expense_update, get_db_connection
-from projections import run_projection
+from projections import run_projection, PROJECTION_START_YEAR, PROJECTION_END_YEAR
 from projection_data import (
     create_projection_schema,
     get_assumptions,
@@ -303,7 +303,7 @@ def remove_extra_income(year: int):
     return get_extra_income()
 
 @app.get("/api/fire-projection")
-def get_fire_projection(start_year: int = Query(2026), end_year: int = Query(2070)):
+def get_fire_projection(start_year: int = Query(PROJECTION_START_YEAR), end_year: int = Query(PROJECTION_END_YEAR)):
     assumptions = get_assumptions()
     extra_income = get_extra_income_by_year()
     try:
@@ -376,4 +376,4 @@ def get_top_recurring_expenses(
         for g in grouped.values() if len(g["months"]) > 1
     ]
     merged.sort(key=lambda x: x["total"], reverse=True)
-    return merged[:limit] 
+    return merged[:limit]

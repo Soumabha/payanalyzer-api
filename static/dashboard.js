@@ -12,7 +12,7 @@ document.addEventListener("DOMContentLoaded", function () {
     fetch("/api/stats").then(r => r.json()).then(data => {
         if (data.group_name) {
             const groupName = document.getElementById('groupName');
-            if (groupName) groupName.innerHTML = `<i class="fa-solid fa-chart-pie"></i> ${data.group_name}`;
+            if (groupName) groupName.innerHTML = `<i class="fa-solid fa-chart-pie"></i> ${escapeHtml(data.group_name)}`;
         }
     });
 
@@ -402,9 +402,9 @@ document.addEventListener("DOMContentLoaded", function () {
                 expenses.forEach(e => {
                     html += `<tr>
                                 <td>${e.date}</td>
-                                <td><span style="font-weight: 500; color: #fff;">${e.description}</span></td>
+                                <td><span style="font-weight: 500; color: #fff;">${escapeHtml(e.description)}</span></td>
                                 <td style="text-align: right; color: var(--accent-secondary); font-weight: 600;">₹${e.cost.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-                                <td><span class="badge" style="background: rgba(108, 92, 231, 0.15); color: #a29bfe; border: 1px solid rgba(108, 92, 231, 0.3);"><i class="${getCategoryIcon(e.category)}"></i> ${e.category}</span></td>
+                                <td><span class="badge" style="background: rgba(108, 92, 231, 0.15); color: #a29bfe; border: 1px solid rgba(108, 92, 231, 0.3);"><i class="${getCategoryIcon(e.category)}"></i> ${escapeHtml(e.category)}</span></td>
                              </tr>`;
                 });
                 html += '</tbody></table>';
@@ -425,7 +425,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 html = '<table><thead><tr><th>Description</th><th style="text-align:center;">Months</th><th style="text-align:center;">Count</th><th style="text-align: right;">Total</th><th style="text-align: right;">Avg/Month</th></tr></thead><tbody>';
                 expenses.forEach(e => {
                     html += `<tr>
-                                <td><span style="font-weight: 500; color: #fff;">${e.description}</span></td>
+                                <td><span style="font-weight: 500; color: #fff;">${escapeHtml(e.description)}</span></td>
                                 <td style="text-align:center;">${e.months}</td>
                                 <td style="text-align:center;">${e.count}</td>
                                 <td style="text-align: right; font-weight: 600;">₹${e.total.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>

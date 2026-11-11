@@ -9,11 +9,17 @@ described in plans/01-phase-1-projection-engine.md.
 
 from typing import Any
 
-# Fixed horizon start used as the API default and as the anchor for
-# assumption validation (projection_data.save_assumptions) - a named
-# constant so it isn't duplicated as a bare 2026 in multiple places (it also
-# mirrors PROJECTION_START_YEAR in static/projection.js).
+# Fixed horizon start/end used as the API defaults and as the anchor for
+# assumption validation (projection_data.save_assumptions) - named constants
+# so 2026/2070 aren't duplicated as bare literals in multiple places (main.py,
+# DEFAULT_ASSUMPTIONS' open-ended end-year fields, and this module's own
+# run_projection default) - change the horizon here and it takes effect
+# everywhere that imports these instead of hardcoding its own copy. They also
+# mirror PROJECTION_START_YEAR/PROJECTION_END_YEAR in static/projection.js,
+# which can't share this constant directly (no shared runtime between Python
+# and the browser) and would need to be kept in sync by hand if changed.
 PROJECTION_START_YEAR = 2026
+PROJECTION_END_YEAR = 2070
 
 # Ordered list of every field a valid `assumptions` dict must contain.
 ASSUMPTION_FIELDS = [
@@ -50,9 +56,9 @@ DEFAULT_ASSUMPTIONS = {
     "healthcare_inflation_pct": 8.0,
     "kids_expense_start_year": 2029,
     "kids_school_start_age": 5,
-    "kids_expense_end_year": 2070,
+    "kids_expense_end_year": PROJECTION_END_YEAR,
     "parents_expense_start_year": 2037,
-    "parents_expense_end_year": 2070,
+    "parents_expense_end_year": PROJECTION_END_YEAR,
     "loan_outstanding_lakhs": 40.0,
     "annual_emi_lakhs": 8.0,
     "loan_end_year": 2031,
@@ -79,7 +85,7 @@ def run_projection(
     assumptions: dict[str, Any],
     extra_income_by_year: dict[int, float] | None = None,
     start_year: int = PROJECTION_START_YEAR,
-    end_year: int = 2070,
+    end_year: int = PROJECTION_END_YEAR,
 ) -> list[dict[str, Any]]:
     """
     Returns one dict per year from start_year to end_year (inclusive),
