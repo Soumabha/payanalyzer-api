@@ -28,7 +28,10 @@ lookup.
 | `education_inflation_pct` | REAL | Kids "education" sub-component only |
 | `healthcare_inflation_pct` | REAL | Parents Expense only (not general inflation) |
 | `kids_expense_start_year` | INTEGER | First year Kids Expense (D) becomes non-zero |
+| `kids_school_start_age` | INTEGER | Age at which the Kids Education sub-component (10%) begins; its snapshot year is `kids_expense_start_year + kids_school_start_age`. Validated: must be `> 0` |
+| `kids_expense_end_year` | INTEGER | Last year (inclusive) Kids Expense (D) is non-zero |
 | `parents_expense_start_year` | INTEGER | First year Parents Expense (E) becomes non-zero |
+| `parents_expense_end_year` | INTEGER | Last year (inclusive) Parents Expense (E) is non-zero |
 | `loan_outstanding_lakhs` | REAL | Informational / future use |
 | `annual_emi_lakhs` | REAL | EMI amount while active |
 | `loan_end_year` | INTEGER | Last year (inclusive) the EMI is active; `F(y) = True` while `year <= loan_end_year` |
@@ -36,7 +39,7 @@ lookup.
 | `rent_increase_pct` | REAL | Annual growth for Rental Income |
 | `current_annual_salary_lakhs` | REAL | Seed for Salary (J), year 2026 |
 | `salary_growth_pct` | REAL | Flat annual increase for Salary |
-| `retirement_year` | INTEGER | First year Salary (J) becomes 0 |
+| `retirement_year` | INTEGER | First year Salary (J) becomes 0. Validated: must be `> PROJECTION_START_YEAR` (2026) |
 | `starting_cash_lakhs` | REAL | Cash Start (O) for year 2026 |
 | `equity_portfolio_lakhs` | REAL | Seed for Equity Start (R), year 2026 |
 | `equity_return_pct` | REAL | Annual equity growth rate |

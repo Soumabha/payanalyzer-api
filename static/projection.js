@@ -92,13 +92,12 @@ const GROUP_LABELS = {
     total: "Total",
 };
 
-function fmt(value, isInteger = false, isPlain = false) {
+function fmt(value, isPlain = false) {
     if (typeof value === "boolean") return value ? "Yes" : "No";
     if (typeof value === "number") {
         // Plain values (e.g. calendar years) should never get thousands
         // separators, otherwise 2027 renders as "2,027".
         if (isPlain) return String(value);
-        if (isInteger) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
         return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
     return value ?? "";
@@ -128,7 +127,7 @@ function renderExtraIncomeList(entries) {
         html += `<tr>
             <td>${e.year}</td>
             <td>${fmt(e.amount_lakhs)}</td>
-            <td>${e.note || ""}</td>
+            <td>${escapeHtml(e.note)}</td>
             <td><button class="delete-row-btn" data-year="${e.year}" title="Delete"><i class="fa-solid fa-trash"></i></button></td>
         </tr>`;
     });
@@ -188,7 +187,7 @@ function renderProjectionTable(rows, milestones) {
         html += `<tr class="${rowClass}">`;
         COLUMN_DEFS.forEach((col) => {
             const groupClass = col.group ? `col-group-${col.group}` : "";
-            html += `<td class="${groupClass}">${fmt(row[col.key], col.integer, col.plain)}</td>`;
+            html += `<td class="${groupClass}">${fmt(row[col.key], col.plain)}</td>`;
         });
         html += "</tr>";
     });

@@ -7,7 +7,7 @@ splitwise_data.py.
 from typing import Any
 
 from splitwise_data import get_db_connection
-from projections import ASSUMPTION_FIELDS, DEFAULT_ASSUMPTIONS
+from projections import ASSUMPTION_FIELDS, DEFAULT_ASSUMPTIONS, PROJECTION_START_YEAR
 
 _ASSUMPTION_COLUMNS_SQL = ",\n    ".join(
     f"{field} REAL" if not field.endswith("_year") else f"{field} INTEGER"
@@ -90,6 +90,17 @@ def save_assumptions(partial_data: dict[str, Any]) -> dict[str, Any]:
     missing = [f for f in ASSUMPTION_FIELDS if f not in current or current[f] is None]
     if missing:
         raise ValueError(f"Missing assumption fields: {missing}")
+
+    if current["retirement_year"] <= PROJECTION_START_YEAR:
+        raise ValueError(
+            f"retirement_year ({current['retirement_year']}) must be after "
+            f"the projection start year ({PROJECTION_START_YEAR})"
+        )
+    if current["kids_school_start_age"] <= 0:
+        raise ValueError(
+            "kids_school_start_age must be greater than 0 - Kids Education "
+            "expenses must start after kids_expense_start_year, not at or before it"
+        )
 
     columns_sql = ", ".join(ASSUMPTION_FIELDS)
     placeholders_sql = ", ".join("?" for _ in ASSUMPTION_FIELDS)

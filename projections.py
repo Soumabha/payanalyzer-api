@@ -9,6 +9,12 @@ described in plans/01-phase-1-projection-engine.md.
 
 from typing import Any
 
+# Fixed horizon start used as the API default and as the anchor for
+# assumption validation (projection_data.save_assumptions) - a named
+# constant so it isn't duplicated as a bare 2026 in multiple places (it also
+# mirrors PROJECTION_START_YEAR in static/projection.js).
+PROJECTION_START_YEAR = 2026
+
 # Ordered list of every field a valid `assumptions` dict must contain.
 ASSUMPTION_FIELDS = [
     "current_annual_expense_lakhs",
@@ -72,7 +78,7 @@ def validate_assumptions(assumptions: dict[str, Any]) -> None:
 def run_projection(
     assumptions: dict[str, Any],
     extra_income_by_year: dict[int, float] | None = None,
-    start_year: int = 2026,
+    start_year: int = PROJECTION_START_YEAR,
     end_year: int = 2070,
 ) -> list[dict[str, Any]]:
     """
@@ -103,7 +109,10 @@ def run_projection(
 
     rows = []
 
-    # Running state carried from one year to the next.
+    # Running state carried from one year to the next. Every *_prev
+    # variable below is always assigned the raw (unrounded) value computed
+    # that year - only the dicts appended to `rows` are rounded (to 4dp, for
+    # display/API output) - so rounding never compounds across the horizon.
     prev_base_expense = None
     prev_rental_income = None
     prev_salary = None
@@ -253,7 +262,6 @@ def run_projection(
             "total_portfolio": round(total_portfolio, 4),
         })
 
-        # Carry forward unrounded values to avoid compounding rounding error.
         cash_end_prev = cash_end
         equity_end_prev = equity_end
         debt_end_prev = debt_end
