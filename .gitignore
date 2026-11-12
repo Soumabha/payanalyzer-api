@@ -98,4 +98,10 @@ celerybeat-schedule
 .pyre/
 
 # VS Code
-.vscode/ 
+.vscode/
+
+# macOS
+.DS_Store
+
+# SQLite DB (local data, not source)
+*.db

@@ -18,7 +18,18 @@ python-dateutil>=2.8.0
 numpy>=1.24.0
 
 # Natural language processing (for stemming)
-nltk>=3.8.0
+# Pinned below 3.10 because nltk>=3.10 ships an import-time security hook
+# (nltk/inisec.py, a CWE-427 mitigation) that blocks importing its own
+# 'regex' dependency whenever uvicorn inserts the CWD into sys.path to
+# locate the app module - which uvicorn always does. PorterStemmer's
+# behavior is unaffected by this pin.
+nltk==3.9.1
 
 # Static file serving (included with FastAPI)
 # fastapi.staticfiles is part of FastAPI
+
+# PDF parsing (manual import of Splitwise printable-summary PDFs, see pdf_import.py)
+pypdf>=5.0.0
+
+# Testing (see test_projections.py - no DB/fixtures, pure projections.py checks)
+pytest>=7.4.0
