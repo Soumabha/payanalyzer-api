@@ -3,8 +3,8 @@ Pure calculation engine for the FIRE / wealth projection.
 
 No database or FastAPI dependencies here on purpose — this module only knows
 how to turn a dict of assumptions (+ optional per-year manual extra income)
-into a year-by-year projection table, exactly matching the columns (A-X)
-described in plans/01-phase-1-projection-engine.md.
+into a year-by-year projection table whose columns mirror the original
+planning spreadsheet's columns A-X (year through total portfolio).
 """
 
 from typing import Any
@@ -89,8 +89,9 @@ def run_projection(
 ) -> list[dict[str, Any]]:
     """
     Returns one dict per year from start_year to end_year (inclusive),
-    matching spreadsheet columns A-X. See plans/01-phase-1-projection-engine.md
-    section 2/3 for the formulas and worked examples this implements.
+    matching spreadsheet columns A-X. The formulas are documented inline,
+    step by step, in the loop below; test_projections.py holds verified
+    worked examples for each of them.
     """
     validate_assumptions(assumptions)
     extra_income_by_year = extra_income_by_year or {}
