@@ -4,12 +4,13 @@ Pure, DB-free tests for projections.py - the FIRE/wealth projection engine.
 No fixtures, no database, no FastAPI: every test builds its own assumptions
 dict inline and calls run_projection() directly, exactly like the engine's
 own module docstring promises ("no database or FastAPI dependencies here on
-purpose"). Golden values are deliberately "nice" illustrative numbers taken
-from plans/01-phase-1-projection-engine.md's worked examples - not meant to
-byte-match any real production data, just precise enough to catch logic
-regressions (and to keep the plan doc's worked examples honest, since a
-prose description of these formulas drifted out of sync with the code once
-already - see the Kids Education snapshot-timing fix this suite locks in).
+purpose"). Golden values are deliberately "nice" illustrative numbers, each
+verified by running run_projection() directly rather than derived by hand -
+not meant to byte-match any real production data, just precise enough to
+catch logic regressions. This suite is the source of truth for how the
+formulas behave: a prose description of them once drifted out of sync with
+the code (see the Kids Education snapshot-timing test below), so the
+executable examples live here instead.
 
 Run with: python3 -m pytest test_projections.py -v
 """
@@ -74,7 +75,7 @@ def test_default_assumptions_run_end_to_end_without_error():
 
 
 def test_base_expense_compounds_at_inflation_pct():
-    """Golden values from the plan doc's normal-year walkthrough:
+    """Golden values for a normal-year walkthrough:
     C(2026)=12, C(2027)=12.72, C(2028)=13.4832, C(2029)=14.2922."""
     assumptions = disabled_assumptions(current_annual_expense_lakhs=12.0, inflation_pct=6.0)
     rows = run_projection(assumptions, start_year=PROJECTION_START_YEAR, end_year=PROJECTION_START_YEAR + 3)
@@ -121,8 +122,9 @@ def test_kids_basic_snapshots_at_start_year_and_compounds_at_inflation_pct():
 
 
 def test_kids_education_snapshots_later_than_basic_at_its_own_rate():
-    """The exact bug the plan doc had wrong: Education does NOT snapshot
-    alongside Basic at kids_expense_start_year - it snapshots later, at
+    """Education does NOT snapshot alongside Basic at
+    kids_expense_start_year (a previous prose description of this logic
+    wrongly said it did) - it snapshots later, at
     kids_expense_start_year + kids_school_start_age, and compounds at
     education_inflation_pct (not inflation_pct) from then on. Golden values
     verified directly against run_projection(): D(2029)=4.29 (Basic only),
@@ -260,11 +262,11 @@ def test_emi_active_flag_and_amount_track_loan_end_year(loan_end_offset, emi_amo
             assert row["emi_amount"] == 0.0
 
 
-def test_withdrawal_waterfall_matches_plan_doc_spec_case():
-    """plans/01-phase-1-projection-engine.md §2 "Isolated example": a 10L
-    shortfall with 6L of debt and 40L of equity available before withdrawal.
-    Debt is drained first (6L), equity covers the remaining 4L, cash is
-    floored at 0 rather than ever going negative."""
+def test_withdrawal_waterfall_drains_debt_before_equity_on_shortfall():
+    """Withdrawal waterfall, cash -> debt -> equity: a 10L shortfall with 6L
+    of debt and 40L of equity available before withdrawal. Debt is drained
+    first (6L), equity covers the remaining 4L, cash is floored at 0 rather
+    than ever going negative."""
     start = PROJECTION_START_YEAR
     assumptions = disabled_assumptions(
         current_annual_expense_lakhs=10.0,  # the whole shortfall - no income to offset it
