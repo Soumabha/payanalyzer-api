@@ -14,36 +14,24 @@ import sys
 from collections import Counter
 
 from category_inference import infer_category
-from splitwise_data import get_db_connection
+from splitwise_data import SqliteExpenseStore
 
 
-def evaluate(start_date: str, end_date: str, ids: list[int] | None = None):
-    conn = get_db_connection()
-    if ids:
-        placeholders = ",".join("?" * len(ids))
-        rows = conn.execute(
-            f"""
-            SELECT id, date, description, cost, category
-            FROM expenses
-            WHERE id IN ({placeholders}) AND deleted_at IS NULL AND category IS NOT NULL
-            ORDER BY date
-            """,
-            ids,
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT id, date, description, cost, category
-            FROM expenses
-            WHERE date >= ? AND date <= ? AND deleted_at IS NULL AND category IS NOT NULL
-            ORDER BY date
-            """,
-            (start_date, end_date),
-        ).fetchall()
+def evaluate(start_date: str, end_date: str, ids: list[int] | None = None, store=None):
+    owns_store = store is None
+    store = store if store is not None else SqliteExpenseStore()
+    try:
+        history = store.categorized_history()
+        rows = store.rows_for_evaluation(start_date, end_date, ids)
+    finally:
+        if owns_store:
+            store.close()
 
     results = []
     for row in rows:
-        predicted, tier, info = infer_category(conn, row["description"], exclude_start=start_date, exclude_end=end_date)
+        predicted, tier, info = infer_category(
+            history, row["description"], exclude_start=start_date, exclude_end=end_date
+        )
         results.append(
             {
                 "date": row["date"],
@@ -55,7 +43,6 @@ def evaluate(start_date: str, end_date: str, ids: list[int] | None = None):
                 "info": info,
             }
         )
-    conn.close()
     return results
 
 

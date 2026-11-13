@@ -45,7 +45,7 @@ from difflib import SequenceMatcher
 
 from nltk.stem import PorterStemmer
 
-from splitwise_data import normalize_description
+from splitwise_data import description_key, normalize_description
 
 _stemmer = PorterStemmer()
 
@@ -73,60 +73,61 @@ def _char_ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
-def _date_exclusion_sql(exclude_start, exclude_end):
-    """SQL fragment + params to exclude a date range from the historical
-    pool, used for backtesting ("what would this predict if these rows
-    didn't exist yet")."""
-    if exclude_start and exclude_end:
-        return " AND (date < ? OR date > ?)", (exclude_start, exclude_end)
-    return "", ()
+def _evidence(history, exclude_start=None, exclude_end=None):
+    """The rows inference may learn from.
+
+    `history` is a list of plain row dicts with at least date, description and
+    category - already limited to live, categorized rows by whoever supplied it
+    (see SqliteExpenseStore.categorized_history). exclude_start/exclude_end
+    (both 'YYYY-MM-DD') drop a date range from it, for backtesting: "what would
+    this predict if these rows didn't exist yet". A row with no date can't be
+    shown to fall outside the range, so it is dropped too.
+    """
+    if not (exclude_start and exclude_end):
+        return history
+    return [
+        r for r in history
+        if r.get("date") is not None and (r["date"] < exclude_start or r["date"] > exclude_end)
+    ]
 
 
-def exact_match_category(conn, description, exclude_start=None, exclude_end=None):
+def _majority(votes: Counter):
+    """Most-voted category; ties go to the alphabetically first, so the answer
+    never depends on the order rows happen to arrive in."""
+    return min(votes.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def exact_match_category(history, description, exclude_start=None, exclude_end=None):
     """Tier 1: case/whitespace-insensitive exact match, majority category."""
-    date_sql, date_params = _date_exclusion_sql(exclude_start, exclude_end)
-    row = conn.execute(
-        f"""
-        SELECT category, COUNT(*) as n
-        FROM expenses
-        WHERE lower(trim(description)) = lower(trim(?))
-          AND category IS NOT NULL AND deleted_at IS NULL
-          {date_sql}
-        GROUP BY category
-        ORDER BY n DESC
-        LIMIT 1
-        """,
-        (description, *date_params),
-    ).fetchone()
-    return row["category"] if row else None
+    key = description_key(description)
+    votes = Counter(
+        r["category"] for r in _evidence(history, exclude_start, exclude_end)
+        if description_key(r["description"]) == key
+    )
+    return _majority(votes)[0] if votes else None
 
 
-def _distinct_historical_descriptions(conn, exclude_start=None, exclude_end=None):
+def _distinct_historical_descriptions(history, exclude_start=None, exclude_end=None):
     """One entry per distinct (case/whitespace-normalized) historical
     description, paired with its own dominant category. Used as the fuzzy
     comparison corpus, so a single very-frequently-repeated description
-    counts as one data point, not one vote per row."""
-    date_sql, date_params = _date_exclusion_sql(exclude_start, exclude_end)
-    rows = conn.execute(
-        f"""
-        SELECT description, category, COUNT(*) as n
-        FROM expenses
-        WHERE category IS NOT NULL AND deleted_at IS NULL {date_sql}
-        GROUP BY lower(trim(description)), category
-        """,
-        date_params,
-    ).fetchall()
-    best = {}
-    for row in rows:
-        key = normalize_description(row["description"] or "").lower()
+    counts as one data point, not one vote per row. Descriptions are returned
+    whitespace-normalized, the same form every other comparison uses."""
+    by_key = {}
+    for r in _evidence(history, exclude_start, exclude_end):
+        key = description_key(r["description"])
         if not key:
             continue
-        if key not in best or row["n"] > best[key][2]:
-            best[key] = (row["description"], row["category"], row["n"])
-    return list(best.values())
+        entry = by_key.setdefault(key, (normalize_description(r["description"]), Counter()))
+        entry[1][r["category"]] += 1
+    corpus = []
+    for text, votes in by_key.values():
+        category, n = _majority(votes)
+        corpus.append((text, category, n))
+    return corpus
 
 
-def fuzzy_match_category(conn, description, exclude_start=None, exclude_end=None):
+def fuzzy_match_category(history, description, exclude_start=None, exclude_end=None):
     """Tier 2: fuzzy match against similarly-worded historical descriptions.
 
     Returns (category_or_None, supporting_matches); supporting_matches lists
@@ -136,16 +137,17 @@ def fuzzy_match_category(conn, description, exclude_start=None, exclude_end=None
     if len(tokens) < FUZZY_MIN_TOKENS:
         return None, []
 
-    norm_target = normalize_description(description).lower()
+    norm_target = description_key(description)
+    target_text = normalize_description(description)
     target_stems = _stem_set(description)
-    corpus = _distinct_historical_descriptions(conn, exclude_start, exclude_end)
+    corpus = _distinct_historical_descriptions(history, exclude_start, exclude_end)
 
     matches = []
     for hist_desc, hist_category, _n in corpus:
-        if normalize_description(hist_desc or "").lower() == norm_target:
+        if description_key(hist_desc) == norm_target:
             continue  # identical string is Tier 1's job, not fuzzy's
         jaccard = _jaccard(target_stems, _stem_set(hist_desc))
-        ratio = _char_ratio(description, hist_desc or "")
+        ratio = _char_ratio(target_text, hist_desc)
         if jaccard >= FUZZY_JACCARD_THRESHOLD and ratio >= FUZZY_CHAR_RATIO_THRESHOLD:
             matches.append(
                 {"description": hist_desc, "category": hist_category, "jaccard": jaccard, "char_ratio": ratio}
@@ -162,18 +164,18 @@ def fuzzy_match_category(conn, description, exclude_start=None, exclude_end=None
     return top_category, matches
 
 
-def infer_category(conn, description, exclude_start=None, exclude_end=None):
+def infer_category(history, description, exclude_start=None, exclude_end=None):
     """Layered category inference. Returns (category_or_None, tier, info).
 
-    tier is one of "exact", "fuzzy", "none". exclude_start/exclude_end (both
-    'YYYY-MM-DD') let the historical pool exclude a date range, for
+    tier is one of "exact", "fuzzy", "none". `history` is the evidence (see
+    _evidence); exclude_start/exclude_end drop a date range from it, for
     backtesting against data that's already in the DB.
     """
-    exact = exact_match_category(conn, description, exclude_start, exclude_end)
+    exact = exact_match_category(history, description, exclude_start, exclude_end)
     if exact is not None:
         return exact, "exact", {}
 
-    fuzzy_category, matches = fuzzy_match_category(conn, description, exclude_start, exclude_end)
+    fuzzy_category, matches = fuzzy_match_category(history, description, exclude_start, exclude_end)
     if fuzzy_category is not None:
         return fuzzy_category, "fuzzy", {"matches": matches}
 
