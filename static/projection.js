@@ -183,9 +183,15 @@ function yearBadges(row) {
 }
 
 // A month sub-row only has data for a few columns; the rest stay blank.
+// Base Exp. + EMI Amt = Total Exp., so an actual month's Base Exp. matches
+// the Expenses tab for that month.
 function monthCellValue(month, colKey) {
     switch (colKey) {
         case "year": return null;
+        // Non-loan spend: the recorded total for actual months (what the
+        // Expenses tab shows for that month), the forecast otherwise.
+        case "base_expense": return month.spend;
+        case "emi_amount": return month.loan_payment;
         case "total_expense": return month.expense;
         case "total_income": return month.income;
         case "net_expense": return Math.max(0, -month.net);
@@ -200,7 +206,7 @@ function renderMonthRows(row, columns) {
         const status = MONTH_STATUS[month.status] || { label: escapeHtml(month.status), cls: "" };
         const monthIndex = parseInt(month.month.slice(5, 7), 10) - 1;
         const spendNote = month.actual_spend !== null
-            ? ` title="Recorded spend ${month.actual_spend.toFixed(2)} L${month.status === "actual" ? " + assumed EMI" : " so far this month"}"`
+            ? ` title="Recorded spend ${month.actual_spend.toFixed(2)} L${month.status === "actual" ? " + loan payment" : " so far this month"}"`
             : "";
         html += `<tr class="month-row ${status.cls}${expandedYears.has(row.year) ? "" : " hidden"}" data-month-of="${row.year}"${spendNote}>`;
         columns.forEach((col) => {

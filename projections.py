@@ -98,8 +98,11 @@ def _blend_year(
 
     Month status, relative to `today`:
       actual       - month already closed and has recorded spend: expense is
-                     that spend plus the assumed EMI (EMI is paid straight from
-                     the bank, so it never appears in the expense records).
+                     that spend plus the loan payment (EMI is debited straight
+                     from the bank, so it never appears in the expense records).
+                     Each month reports `spend` (the non-loan part) and
+                     `loan_payment` separately, so it reconciles to the
+                     expense records: expense == spend + loan_payment.
       no_data      - month closed but has no recorded spend (most likely a
                      sync/import gap): falls back to the forecast and is
                      flagged so the user can fix the gap.
@@ -151,6 +154,8 @@ def _blend_year(
             "month": key,
             "status": status,
             "expense": round(expense, 4),
+            "spend": round(expense - loan_month, 4),
+            "loan_payment": round(loan_month, 4),
             "actual_spend": round(recorded, 4) if recorded is not None and status in ("actual", "in_progress") else None,
             "forecast_expense": round(forecast_month_expense, 4),
             "income": round(income_month, 4),

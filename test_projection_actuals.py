@@ -156,3 +156,14 @@ def test_income_in_sub_rows_is_the_assumed_annual_figure_over_twelve():
     first = row["months"][0]
     # Each field is rounded to 4dp independently, hence the looser tolerance.
     assert first["net"] == pytest.approx(first["income"] - first["expense"], abs=2e-4)
+
+
+def test_every_month_splits_into_non_loan_spend_and_loan_payment_that_add_up_to_its_expense():
+    spend = {f"{Y}-01": 0.99, f"{Y}-02": 0.68}
+    row = by_year(run(spend, date(Y, 4, 10)))[Y]
+    for month in row["months"]:
+        assert month["spend"] + month["loan_payment"] == pytest.approx(month["expense"], abs=2e-4)
+    january = row["months"][0]
+    assert january["spend"] == 0.99                      # exactly what the expense records hold
+    assert january["loan_payment"] == pytest.approx(EMI_MONTH, abs=1e-4)
+    assert row["months"][2]["spend"] == pytest.approx(FORECAST_MONTH - EMI_MONTH, abs=2e-4)  # no_data month
