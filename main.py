@@ -67,12 +67,6 @@ class AssumptionsUpdate(BaseModel):
     debt_return_pct: Optional[float] = None
 
 
-class ExtraIncomeEntry(BaseModel):
-    year: int
-    amount_lakhs: float
-    note: Optional[str] = None
-
-
 class LoanSetup(BaseModel):
     name: str = "Loan"
     outstanding_lakhs: float
@@ -160,7 +154,11 @@ def startup_event():
     create_journal_schema()
     store = SqliteJournalStore()
     try:
-        journal.migrate_legacy_extra_income(store, _now())
+        if journal.retire_legacy_extra_income_table(store) == "kept":
+            logger.warning(
+                "The old projection_extra_income table still has rows, so it was not dropped. "
+                "Re-enter them in the Journal (Entries > Extra income), then restart."
+            )
     finally:
         store.close()
     sync_splitwise_expenses()
@@ -380,8 +378,8 @@ def journal_page():
 
 
 @app.get("/api/fire-projection/assumptions")
-def get_fire_assumptions(store=Depends(get_journal_store)):
-    return {"assumptions": get_assumptions(), "extra_income": journal.extra_income_by_year_list(store)}
+def get_fire_assumptions():
+    return {"assumptions": get_assumptions()}
 
 
 @app.put("/api/fire-projection/assumptions")
@@ -392,24 +390,6 @@ def update_fire_assumptions(payload: AssumptionsUpdate):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"assumptions": updated}
-
-
-# Pre-journal extra-income endpoints, kept as thin wrappers over the ledger.
-@app.get("/api/fire-projection/extra-income")
-def list_extra_income(store=Depends(get_journal_store)):
-    return journal.extra_income_by_year_list(store)
-
-
-@app.post("/api/fire-projection/extra-income")
-def create_extra_income(entry: ExtraIncomeEntry, store=Depends(get_journal_store)):
-    journal.set_extra_income_for_year(store, _now(), entry.year, entry.amount_lakhs, entry.note)
-    return journal.extra_income_by_year_list(store)
-
-
-@app.delete("/api/fire-projection/extra-income/{year}")
-def remove_extra_income(year: int, store=Depends(get_journal_store)):
-    journal.remove_extra_income_for_year(store, _now(), year)
-    return journal.extra_income_by_year_list(store)
 
 
 @app.get("/api/fire-projection")

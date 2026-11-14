@@ -191,38 +191,24 @@ def test_past_dated_planned_income_is_flagged_for_confirmation():
     assert flags == {"2026-06-01": True, "2026-06-02": False, "2027-06-01": False}
 
 
-def test_legacy_wrapper_replaces_the_year_with_one_approximate_mid_year_entry():
+def test_the_old_year_only_table_is_dropped_when_it_is_empty():
     store = InMemoryJournalStore()
-    journal.add_income(store, NOW, entry_date="2027-02-01", amount_lakhs=1.0)
-    journal.add_income(store, NOW, entry_date="2027-08-01", amount_lakhs=2.0)
-    journal.set_extra_income_for_year(store, NOW, 2027, 9.0, "bonus")
-    assert journal.extra_income_by_year(store) == {2027: 9.0}
-    [entry] = store.entries("income")
-    assert (entry["entry_date"], entry["approximate"]) == ("2027-07-01", True)
-    assert journal.extra_income_by_year_list(store) == [{"year": 2027, "amount_lakhs": 9.0, "note": "bonus"}]
-    journal.remove_extra_income_for_year(store, NOW, 2027)
-    assert journal.extra_income_by_year_list(store) == []
+    assert journal.retire_legacy_extra_income_table(store) == "dropped"
+    assert store.legacy_table_dropped and store.commits == 1
 
 
-def test_legacy_rows_migrate_once_as_approximate_planned_mid_year_entries():
-    store = InMemoryJournalStore(legacy_extra_income=[
-        {"year": 2028, "amount_lakhs": 4.0, "note": "sale"}, {"year": 2030, "amount_lakhs": 1.5, "note": None},
-    ])
-    assert journal.migrate_legacy_extra_income(store, NOW) == 2
-    assert journal.extra_income_by_year(store) == {2028: 4.0, 2030: 1.5}
-    entry = store.entries("income")[0]
-    assert (entry["entry_date"], entry["status"], entry["approximate"], entry["source"]) == (
-        "2028-07-01", "planned", True, "legacy_extra_income")
-    assert journal.migrate_legacy_extra_income(store, NOW) == 0            # idempotent
-    assert len(store.entries("income")) == 2
+def test_the_old_table_is_never_dropped_while_it_still_holds_rows():
+    store = InMemoryJournalStore(legacy_extra_income=[{"year": 2028, "amount_lakhs": 4.0, "note": "sale"}])
+    assert journal.retire_legacy_extra_income_table(store) == "kept"
+    assert not store.legacy_table_dropped and store.legacy_extra_income_rows() != []
+    assert store.entries("income") == []                              # and nothing is copied into the ledger behind your back
 
 
-def test_a_migrated_year_that_was_since_cancelled_does_not_come_back():
-    store = InMemoryJournalStore(legacy_extra_income=[{"year": 2028, "amount_lakhs": 4.0, "note": None}])
-    journal.migrate_legacy_extra_income(store, NOW)
-    journal.void_entry(store, NOW, store.entries("income")[0]["id"])
-    assert journal.migrate_legacy_extra_income(store, NOW) == 0
-    assert journal.extra_income_by_year(store) == {}
+def test_retiring_the_old_table_does_not_touch_the_ledger():
+    store = InMemoryJournalStore()
+    journal.add_income(store, NOW, entry_date="2027-03-01", amount_lakhs=3.0)
+    journal.retire_legacy_extra_income_table(store)
+    assert journal.extra_income_by_year(store) == {2027: 3.0}
 
 
 # -- transfers ------------------------------------------------------------------
@@ -448,17 +434,15 @@ def test_editing_a_prepayment_replaces_it_and_keeps_the_link_to_the_loan():
 
 
 def test_editing_income_changes_amount_status_and_clears_the_approximate_flag_only_if_the_date_moves():
-    store = InMemoryJournalStore(legacy_extra_income=[{"year": 2028, "amount_lakhs": 4.0, "note": "sale"}])
-    journal.migrate_legacy_extra_income(store, NOW)
-    legacy_id = store.entries("income")[0]["id"]
-    journal.edit_entry(store, NOW, legacy_id, entry_date="2028-07-01", amount_lakhs=5.0, note="sale", status="planned")
+    store = InMemoryJournalStore()
+    income_id = journal.add_income(store, NOW, entry_date="2028-07-01", amount_lakhs=4.0, note="sale", approximate=True)
+    journal.edit_entry(store, NOW, income_id, entry_date="2028-07-01", amount_lakhs=5.0, note="sale", status="planned")
     assert store.entries("income")[0]["approximate"] is True and store.entries("income")[0]["amount_lakhs"] == 5.0
     new_id = store.entries("income")[0]["id"]
     journal.edit_entry(store, NOW, new_id, entry_date="2028-09-15", amount_lakhs=5.0, status="received")
     [live] = store.entries("income")
     assert (live["entry_date"], live["approximate"], live["status"]) == ("2028-09-15", False, "received")
     assert journal.extra_income_by_year(store) == {2028: 5.0}
-    assert journal.migrate_legacy_extra_income(store, NOW) == 0          # editing never re-imports the legacy row
 
 
 def test_editing_a_transfer_can_change_its_bucket():

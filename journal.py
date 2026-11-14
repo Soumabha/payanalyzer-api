@@ -27,8 +27,6 @@ from loans import (
     summarize_schedule,
 )
 
-LEGACY_INCOME_SOURCE = "legacy_extra_income"
-LEGACY_INCOME_MONTH_DAY = "07-01"  # year-only legacy entries land mid-year
 INVESTABLE = ("equity", "debt")
 OBSERVABLE_BUCKETS = ("cash", "equity", "debt", "loan")
 INCOME_STATUSES = ("planned", "received")
@@ -376,58 +374,16 @@ def extra_income_by_year(store) -> dict[int, float]:
     return totals
 
 
-def extra_income_by_year_list(store) -> list[dict]:
-    """The pre-journal response shape: one {year, amount_lakhs, note} per year."""
-    by_year: dict[int, dict] = {}
-    for entry in store.entries("income"):
-        year = int(entry["entry_date"][:4])
-        row = by_year.setdefault(year, {"year": year, "amount_lakhs": 0.0, "note": entry["note"]})
-        row["amount_lakhs"] += entry["amount_lakhs"]
-    return [by_year[y] for y in sorted(by_year)]
-
-
-def set_extra_income_for_year(store, now, year, amount_lakhs, note=None):
-    """Legacy wrapper (year-only, one figure per year): replaces the year's
-    income entries with a single approximate mid-year one."""
-    for entry in store.entries("income"):
-        if int(entry["entry_date"][:4]) == year:
-            store.void_entry(entry["id"], now)
-    store.add_entry({
-        "kind": "income", "entry_date": f"{year}-{LEGACY_INCOME_MONTH_DAY}", "amount_lakhs": amount_lakhs,
-        "status": "planned", "approximate": True, "note": note, "created_at": now,
-    })
+def retire_legacy_extra_income_table(store) -> str:
+    """Drop the old year-only projection_extra_income table, which the journal
+    ledger replaced. It is only dropped when it is empty: if it still holds rows
+    they are never destroyed silently, and "kept" is returned so the caller can
+    say so."""
+    if store.legacy_extra_income_rows():
+        return "kept"
+    store.drop_legacy_extra_income_table()
     store.commit()
-
-
-def remove_extra_income_for_year(store, now, year):
-    for entry in store.entries("income"):
-        if int(entry["entry_date"][:4]) == year:
-            store.void_entry(entry["id"], now)
-    store.commit()
-
-
-def migrate_legacy_extra_income(store, now) -> int:
-    """Copy pre-journal year-only rows into the ledger as approximate, planned,
-    mid-year entries. Idempotent: a year already migrated (even if since
-    voided) is never copied again. Returns how many were copied."""
-    already = {
-        e["legacy_year"]
-        for e in store.entries("income", include_voided=True)
-        if e["source"] == LEGACY_INCOME_SOURCE
-    }
-    copied = 0
-    for row in store.legacy_extra_income_rows():
-        if row["year"] in already:
-            continue
-        store.add_entry({
-            "kind": "income", "entry_date": f"{row['year']}-{LEGACY_INCOME_MONTH_DAY}",
-            "amount_lakhs": row["amount_lakhs"], "status": "planned", "approximate": True,
-            "note": row["note"], "source": LEGACY_INCOME_SOURCE, "legacy_year": row["year"], "created_at": now,
-        })
-        copied += 1
-    if copied:
-        store.commit()
-    return copied
+    return "dropped"
 
 
 def confirm_income(store, entry_id, status):

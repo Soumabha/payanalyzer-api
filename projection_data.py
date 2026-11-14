@@ -1,8 +1,7 @@
 """
 Persistence layer for the FIRE / wealth projection's assumptions. Follows the
-same sqlite3 + row_factory pattern as splitwise_data.py. Extra income now lives
-in the journal ledger (see journal.py); the old projection_extra_income table is
-left untouched in existing databases and only read once, to migrate its rows.
+same sqlite3 + row_factory pattern as splitwise_data.py. Extra income lives in
+the journal ledger (see journal.py).
 """
 
 from typing import Any

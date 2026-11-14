@@ -205,6 +205,9 @@ class SqliteJournalStore:
 
     # -- legacy ------------------------------------------------------------ #
 
+    def drop_legacy_extra_income_table(self):
+        self._conn.execute("DROP TABLE IF EXISTS projection_extra_income")
+
     def legacy_extra_income_rows(self):
         """Rows of the pre-journal projection_extra_income table (year-only)."""
         exists = self._conn.execute(

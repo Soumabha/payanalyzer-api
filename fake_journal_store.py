@@ -18,6 +18,7 @@ class InMemoryJournalStore:
         self._observations = []
         self._entries = []
         self._legacy = list(legacy_extra_income or [])
+        self.legacy_table_dropped = False
         self.commits = 0
 
     def close(self):
@@ -123,3 +124,7 @@ class InMemoryJournalStore:
 
     def legacy_extra_income_rows(self):
         return copy.deepcopy(self._legacy)
+
+    def drop_legacy_extra_income_table(self):
+        self._legacy = []
+        self.legacy_table_dropped = True
