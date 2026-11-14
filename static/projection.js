@@ -86,6 +86,12 @@ const COLUMN_DEFS = [
     { key: "debt_end", label: "Debt End", group: "debt" },
 
     { key: "total_portfolio", label: "Total Portfolio", group: "total" },
+
+    // Present only for years with a check-in: how far the check-ins moved each
+    // balance from what the forecast expected (the Start columns stay as forecast).
+    { key: "cash_adjustment", label: "Cash Check-in Adj.", group: "checkin", optional: true },
+    { key: "equity_adjustment", label: "Equity Check-in Adj.", group: "checkin", optional: true },
+    { key: "debt_adjustment", label: "Debt Check-in Adj.", group: "checkin", optional: true },
 ];
 
 const GROUP_LABELS = {
@@ -96,6 +102,7 @@ const GROUP_LABELS = {
     equity: "Equity",
     debt: "Debt",
     total: "Total",
+    checkin: "Check-in",
 };
 
 function fmt(value, isPlain = false) {
@@ -172,9 +179,8 @@ function yearBadges(row) {
     } else if (row.expense_source === "blended") {
         html += `<span class="source-badge source-blended">Blended</span>`;
     }
-    if (row.anchored) {
-        const when = Object.entries(row.anchored).map(([bucket, date]) => `${bucket}: ${date}`).join(", ");
-        html += `<span class="source-badge source-checkin" title="Start balances for this year are implied by your check-in (${escapeHtml(when)}).">Check-in</span>`;
+    if (row.checkin_months) {
+        html += `<span class="source-badge source-checkin" title="Balances were reset by a check-in in ${escapeHtml(row.checkin_months.join(", "))}. Start columns still show the forecast; the adjustment columns show the difference.">Check-in</span>`;
     }
     if (row.no_data_months > 0) {
         html += `<span class="source-badge source-gap" title="Closed months with no recorded expenses - the forecast was used. Sync or import them.">${row.no_data_months} gap${row.no_data_months > 1 ? "s" : ""}</span>`;
@@ -182,7 +188,7 @@ function yearBadges(row) {
     return html;
 }
 
-// A month sub-row only has data for a few columns; the rest stay blank.
+// A month sub-row only has data for some columns; the rest stay blank.
 // Base Exp. + EMI Amt = Total Exp., so an actual month's Base Exp. matches
 // the Expenses tab for that month.
 function monthCellValue(month, colKey) {
@@ -196,8 +202,51 @@ function monthCellValue(month, colKey) {
         case "total_income": return month.income;
         case "net_expense": return Math.max(0, -month.net);
         case "reserve_contribution": return Math.max(0, month.net);
+        case "net_cash_flow": return month.net;
+        case "cash_end": return month.cash_end;
+        case "equity_end": return month.equity_end;
+        case "debt_end": return month.debt_end;
+        case "total_portfolio": return month.total_portfolio;
+        case "loan_interest": return month.loan_interest;
+        case "loan_principal": return month.loan_principal;
+        case "loan_prepayment": return month.loan_prepayment;
+        case "loan_balance_end": return month.loan_balance_end;
         default: return undefined;
     }
+}
+
+// Variance of a check-in vs what the forecast expected, per column.
+// Higher than expected is green, lower is red; the loan balance is the
+// reverse (owing less is good).
+function monthVariance(month, colKey) {
+    const marks = month.checkin;
+    if (!marks) return null;
+    switch (colKey) {
+        case "cash_end": return marks.cash ? { value: marks.cash.variance, goodWhenUp: true } : null;
+        case "equity_end": return marks.equity ? { value: marks.equity.variance, goodWhenUp: true } : null;
+        case "debt_end": return marks.debt ? { value: marks.debt.variance, goodWhenUp: true } : null;
+        case "total_portfolio":
+            return month.checkin_total_variance === null || month.checkin_total_variance === undefined
+                ? null : { value: month.checkin_total_variance, goodWhenUp: true };
+        case "loan_balance_end": return marks.loan ? { value: marks.loan.variance, goodWhenUp: false } : null;
+        default: return null;
+    }
+}
+
+function varianceChip(variance) {
+    if (!variance) return "";
+    const value = variance.value;
+    if (Math.abs(value) < 0.005) return ` <span class="var-chip var-flat" title="Matched the forecast">0.00</span>`;
+    const good = variance.goodWhenUp ? value > 0 : value < 0;
+    const sign = value > 0 ? "+" : "\u2212";
+    const text = Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return ` <span class="var-chip ${good ? "var-good" : "var-bad"}" title="Check-in vs forecast: ${sign}${text} L">${sign}${text}</span>`;
+}
+
+function adjustmentCell(value) {
+    if (value === undefined || value === null) return "";
+    if (Math.abs(value) < 0.005) return fmt(value);
+    return `<span class="${value > 0 ? "adj-up" : "adj-down"}">${value > 0 ? "+" : ""}${fmt(value)}</span>`;
 }
 
 function renderMonthRows(row, columns) {
@@ -208,7 +257,8 @@ function renderMonthRows(row, columns) {
         const spendNote = month.actual_spend !== null
             ? ` title="Recorded spend ${month.actual_spend.toFixed(2)} L${month.status === "actual" ? " + loan payment" : " so far this month"}"`
             : "";
-        html += `<tr class="month-row ${status.cls}${expandedYears.has(row.year) ? "" : " hidden"}" data-month-of="${row.year}"${spendNote}>`;
+        const checkinClass = month.checkin ? " month-checkin" : "";
+        html += `<tr class="month-row ${status.cls}${checkinClass}${expandedYears.has(row.year) ? "" : " hidden"}" data-month-of="${row.year}"${spendNote}>`;
         columns.forEach((col) => {
             const groupClass = col.group ? `col-group-${col.group}` : "";
             if (col.key === "year") {
@@ -216,7 +266,7 @@ function renderMonthRows(row, columns) {
                 return;
             }
             const value = monthCellValue(month, col.key);
-            html += `<td class="${groupClass}">${value === undefined ? "" : fmt(value, col.plain)}</td>`;
+            html += `<td class="${groupClass}">${value === undefined ? "" : fmt(value, col.plain)}${varianceChip(monthVariance(month, col.key))}</td>`;
         });
         html += "</tr>";
     });
@@ -254,7 +304,8 @@ function renderProjectionTable(rows, milestones) {
                 html += `<td class="${groupClass}">${row.year}${yearBadges(row)}</td>`;
                 return;
             }
-            html += `<td class="${groupClass}">${fmt(row[col.key], col.plain)}</td>`;
+            const cellHtml = col.key.endsWith("_adjustment") ? adjustmentCell(row[col.key]) : fmt(row[col.key], col.plain);
+            html += `<td class="${groupClass}">${cellHtml}</td>`;
         });
         html += "</tr>";
         if (hasMonths) html += renderMonthRows(row, columns);

@@ -7,7 +7,6 @@ into a year-by-year projection table whose columns mirror the original
 planning spreadsheet's columns A-X (year through total portfolio).
 """
 
-import calendar
 from datetime import date
 from typing import Any
 
@@ -121,6 +120,7 @@ def _blend_year(
     income_month = total_income / 12
 
     months = []
+    nets = []
     year_expense = 0.0
     actual_spend_total = 0.0
     no_data_months = 0
@@ -161,11 +161,13 @@ def _blend_year(
             "income": round(income_month, 4),
             "net": round(income_month - expense, 4),
         })
+        nets.append(income_month - expense)
         year_expense += expense
 
     return {
         "total_expense": year_expense,
         "months": months,
+        "nets": nets,
         "actual_spend": actual_spend_total,
         "no_data_months": no_data_months,
         "source": "actual" if all_actual else "blended",
@@ -179,64 +181,173 @@ def _as_date(value: Any) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
 
 
-def _anchors_by_year(
-    observations: list[dict[str, Any]], start_year: int, end_year: int
-) -> dict[str, dict[int, tuple[date, float]]]:
-    """bucket -> year -> (as_of, balance): the latest observation in that year
-    (ties: the later in the list). Observations outside the window are ignored."""
-    anchors: dict[str, dict[int, tuple[date, float]]] = {}
+def _month_key(value: date) -> str:
+    return f"{value.year}-{value.month:02d}"
+
+
+def _checkins_by_month(
+    observations: list[dict[str, Any]], start_year: int, today: date
+) -> dict[str, dict[str, tuple[date, float]]]:
+    """month -> bucket -> (as_of, balance). A check-in is snapped to the START of
+    its month; if a bucket has several in a month the latest-dated wins (ties:
+    the later in the list). Months before start_year or after today's month
+    can't be applied and are ignored."""
+    by_month: dict[str, dict[str, tuple[date, float]]] = {}
+    last_month = _month_key(today)
     for observation in observations:
         bucket = observation["bucket"]
         if bucket not in BUCKETS:
             continue
         as_of = _as_date(observation["as_of"])
-        if not start_year <= as_of.year <= end_year:
+        key = _month_key(as_of)
+        if as_of.year < start_year or key > last_month:
             continue
-        current = anchors.setdefault(bucket, {}).get(as_of.year)
+        current = by_month.setdefault(key, {}).get(bucket)
         if current is None or as_of >= current[0]:
-            anchors[bucket][as_of.year] = (as_of, observation["amount_lakhs"])
-    return anchors
+            by_month[key][bucket] = (as_of, observation["amount_lakhs"])
+    return by_month
 
 
-def _transfer_deltas_by_year(
-    transfers: list[dict[str, Any]], observations: list[dict[str, Any]], start_year: int, end_year: int
-) -> dict[int, dict[str, float]]:
-    latest_observed: dict[str, date] = {}
-    for observation in observations:
-        if observation["bucket"] in BUCKETS:
-            as_of = _as_date(observation["as_of"])
-            if observation["bucket"] not in latest_observed or as_of > latest_observed[observation["bucket"]]:
-                latest_observed[observation["bucket"]] = as_of
-
-    deltas: dict[int, dict[str, float]] = {}
+def _transfer_deltas_by_month(
+    transfers: list[dict[str, Any]], observations: list[dict[str, Any]], start_year: int
+) -> dict[str, dict[str, float]]:
+    """month -> bucket -> net change from invest/withdraw entries, applied at the
+    END of their month. A transfer made on/before a check-in of a bucket it
+    touches, in the same month, is already inside that observed balance and is
+    skipped. A transfer in an earlier month is applied; the later check-in then
+    shows only what it did not explain."""
+    deltas: dict[str, dict[str, float]] = {}
     for transfer in transfers:
         moved_on = _as_date(transfer["date"])
+        if moved_on.year < start_year:
+            continue
         touched = (transfer["from_bucket"], transfer["to_bucket"])
-        if not start_year <= moved_on.year <= end_year:
+        absorbed = any(
+            observation["bucket"] in touched
+            and _month_key(_as_date(observation["as_of"])) == _month_key(moved_on)
+            and _as_date(observation["as_of"]) >= moved_on
+            for observation in observations
+        )
+        if absorbed:
             continue
-        if any(bucket in latest_observed and latest_observed[bucket] >= moved_on for bucket in touched):
-            continue
-        year_deltas = deltas.setdefault(moved_on.year, {bucket: 0.0 for bucket in BUCKETS})
-        if transfer["from_bucket"] in year_deltas:
-            year_deltas[transfer["from_bucket"]] -= transfer["amount_lakhs"]
-        if transfer["to_bucket"] in year_deltas:
-            year_deltas[transfer["to_bucket"]] += transfer["amount_lakhs"]
+        month_deltas = deltas.setdefault(_month_key(moved_on), {bucket: 0.0 for bucket in BUCKETS})
+        if transfer["from_bucket"] in month_deltas:
+            month_deltas[transfer["from_bucket"]] -= transfer["amount_lakhs"]
+        if transfer["to_bucket"] in month_deltas:
+            month_deltas[transfer["to_bucket"]] += transfer["amount_lakhs"]
     return deltas
 
 
-def _elapsed_year_fraction(as_of: date) -> float:
-    days_in_year = 366 if calendar.isleap(as_of.year) else 365
-    return as_of.timetuple().tm_yday / days_in_year
+def _monthly_balance_path(
+    blend: dict[str, Any],
+    cash: float,
+    equity: float,
+    debt: float,
+    equity_return: float,
+    debt_return: float,
+    checkins: dict[str, dict[str, tuple[date, float]]],
+    transfer_deltas: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    """
+    Month-by-month cash/equity/debt balances for one blended year, carried from
+    the year's (forecast) start balances. Each month:
+      1. a check-in snapped to this month resets the observed buckets to the
+         observed balance; the variance is observed minus what the path held
+         at the start of the month;
+      2. the month's net cash flow hits cash; a shortfall is withdrawn from
+         debt first, then equity (the same cash -> debt -> equity waterfall as
+         the annual engine, which may leave equity negative);
+      3. equity and debt grow by (1 + annual return)^(1/12) - 1;
+      4. invest/withdraw transfers dated in the month move money at month end.
+    Expenses and income are not touched: a check-in only moves balances.
+    """
+    equity_monthly = (1 + equity_return) ** (1 / 12) - 1
+    debt_monthly = (1 + debt_return) ** (1 / 12) - 1
+    balances = {"cash": cash, "equity": equity, "debt": debt}
+    adjustments = {bucket: 0.0 for bucket in BUCKETS}
+    transfer_totals = {bucket: 0.0 for bucket in BUCKETS}
+    equity_growth_total = debt_growth_total = 0.0
+    checkin_months = []
+    months_out = []
+
+    for month, net in zip(blend["months"], blend["nets"]):
+        key = month["month"]
+        marks = {}
+        for bucket, (as_of, observed) in checkins.get(key, {}).items():
+            expected = balances[bucket]
+            marks[bucket] = {
+                "as_of": as_of.isoformat(),
+                "observed": round(observed, 4),
+                "expected": round(expected, 4),
+                "variance": round(observed - expected, 4),
+            }
+            adjustments[bucket] += observed - expected
+            balances[bucket] = observed
+        if marks:
+            checkin_months.append(key)
+
+        cash_after = balances["cash"] + net
+        shortfall = max(0.0, -cash_after)
+        cash_now = max(0.0, cash_after)
+        equity_growth = balances["equity"] * equity_monthly
+        debt_growth = balances["debt"] * debt_monthly
+        debt_available = balances["debt"] + debt_growth
+        debt_withdrawal = min(shortfall, debt_available)
+        equity_withdrawal = max(0.0, shortfall - debt_available)
+        equity_now = balances["equity"] + equity_growth - equity_withdrawal
+        debt_now = balances["debt"] + debt_growth - debt_withdrawal
+        equity_growth_total += equity_growth
+        debt_growth_total += debt_growth
+
+        moved = transfer_deltas.get(key)
+        if moved:
+            cash_now = max(0.0, cash_now + moved["cash"])
+            equity_now += moved["equity"]
+            debt_now += moved["debt"]
+            for bucket in BUCKETS:
+                transfer_totals[bucket] += moved[bucket]
+        balances = {"cash": cash_now, "equity": equity_now, "debt": debt_now}
+
+        months_out.append({
+            "cash_end": round(cash_now, 4),
+            "equity_end": round(equity_now, 4),
+            "debt_end": round(debt_now, 4),
+            "total_portfolio": round(cash_now + equity_now + debt_now, 4),
+            "checkin": marks or None,
+            "checkin_total_variance": round(sum(m["variance"] for m in marks.values()), 4) if marks else None,
+        })
+
+    return {
+        "months": months_out,
+        "cash": balances["cash"],
+        "equity": balances["equity"],
+        "debt": balances["debt"],
+        "equity_growth": equity_growth_total,
+        "debt_growth": debt_growth_total,
+        "adjustments": adjustments,
+        "checkin_months": checkin_months,
+        "transfer_totals": transfer_totals if any(transfer_totals.values()) else None,
+    }
 
 
-def _elapsed_net_cash_flow(as_of: date, annual_net: float, blend: dict[str, Any] | None) -> float:
-    """Net cash flow of the year up to the end of `as_of`: month by month when
-    the year is blended with actuals, otherwise pro rata by day."""
-    if blend is None:
-        return annual_net * _elapsed_year_fraction(as_of)
-    elapsed = sum(month["net"] for month in blend["months"][: as_of.month - 1])
-    days_in_month = calendar.monthrange(as_of.year, as_of.month)[1]
-    return elapsed + blend["months"][as_of.month - 1]["net"] * as_of.day / days_in_month
+def _merge_loan_into_months(months: list[dict[str, Any]], loan_by_month: dict[str, dict[str, Any]]) -> None:
+    """Per-month loan columns; a statement balance that disagreed with the
+    computed schedule becomes a `loan` check-in variance (observed - computed,
+    so a lower balance than expected is negative)."""
+    for month in months:
+        row = loan_by_month.get(month["month"])
+        month["loan_interest"] = row["interest"] if row else 0.0
+        month["loan_principal"] = row["principal"] if row else 0.0
+        month["loan_prepayment"] = row["prepayment"] if row else 0.0
+        month["loan_balance_end"] = row["closing"] if row else 0.0
+        if row and row["drift"] is not None and abs(row["drift"]) >= 0.00005:
+            marks = month["checkin"] or {}
+            marks["loan"] = {
+                "observed": row["closing"],
+                "expected": round(row["closing"] + row["drift"], 4),
+                "variance": round(-row["drift"], 4),
+            }
+            month["checkin"] = marks
 
 
 def run_projection(
@@ -274,31 +385,40 @@ def run_projection(
                       loan_interest / loan_principal / loan_prepayment /
                       loan_balance_end, and prepayments are part of total
                       expense (so they are deducted from cash).
-      observations  - known cash/equity/debt balances ({bucket, as_of,
-                      amount_lakhs}). For the year of the latest observation
-                      of a bucket the year's start balance is replaced by the
-                      one IMPLIED by the observation (cash: observed balance
-                      minus the net cash flow elapsed to that date; equity/
-                      debt: observed balance de-grown by the elapsed share of
-                      the year's return), so the year closes where the
-                      observation plus the rest of the year's flows say it
-                      should. Later years carry on from there. Anchored rows
-                      carry an `anchored` {bucket: as_of} dict.
+      observations  - check-ins: known cash/equity/debt balances ({bucket,
+                      as_of, amount_lakhs}); actuals mode only. A check-in is
+                      snapped to the START of its month: that month's start
+                      balance becomes the observed one and the rest of the
+                      path (months, later years) follows from it. The balance
+                      the path held before is kept, so each check-in carries
+                      a variance (observed - expected) shown on its month
+                      row; an earlier check-in sets the path until the next
+                      one. Start columns are never rewritten: a year's start
+                      balances are always the forecast carried in, and the
+                      year's adjustments appear as cash/equity/debt_adjustment.
+                      Check-ins after today's month are ignored.
       transfers     - invest/withdraw entries ({date, amount_lakhs,
-                      from_bucket, to_bucket}) applied at the end of their
-                      year, except those dated on/before an observation of a
-                      bucket they touch (that balance already includes them).
-                      Growth on a transferred amount is not modelled in the
-                      year of transfer. Rows gain a `transfers` dict.
+                      from_bucket, to_bucket}), actuals mode only, applied at
+                      the end of their month, except those dated on/before a
+                      check-in of a bucket they touch in the same month (that
+                      balance already includes them). Rows gain a `transfers`
+                      dict.
+
+    In actuals mode every year up to today's runs month by month for balances
+    (see _monthly_balance_path). Expenses and income are never changed by a
+    check-in: past months use recorded spend, everything else the settings.
     """
     validate_assumptions(assumptions)
     extra_income_by_year = extra_income_by_year or {}
     loan_enabled = bool(loan_timeline)
-    anchors = _anchors_by_year(observations or [], start_year, end_year)
-    transfer_deltas = _transfer_deltas_by_year(transfers or [], observations or [], start_year, end_year)
     actuals_enabled = actual_monthly_spend is not None
+    if (observations or transfers) and not actuals_enabled:
+        raise ValueError("observations and transfers are only applied in actuals mode (pass actual_monthly_spend)")
     if actuals_enabled and today is None:
         today = date.today()
+    checkins = _checkins_by_month(observations or [], start_year, today) if actuals_enabled else {}
+    transfer_months = _transfer_deltas_by_month(transfers or [], observations or [], start_year) if actuals_enabled else {}
+    loan_by_month = {row["month"]: row for row in loan_timeline} if loan_enabled else {}
 
     inflation = assumptions["inflation_pct"] / 100
     education_inflation = assumptions["education_inflation_pct"] / 100
@@ -442,47 +562,41 @@ def run_projection(
 
         # O/P/Q - Cash flow
         net_cash_flow = reserve_contribution - net_expense
-        year_anchors = {bucket: anchors[bucket][year] for bucket in anchors if year in anchors[bucket]}
-        if "cash" in year_anchors:
-            observed_on, observed_cash = year_anchors["cash"]
-            cash_start = observed_cash - _elapsed_net_cash_flow(observed_on, net_cash_flow, blend)
+        cash_start = cash_end_prev
+        equity_start = equity_end_prev
+        debt_start = debt_end_prev
+
+        if blend is not None:
+            # Blended (actuals) years run month by month so check-ins and
+            # transfers land in their own month; see _monthly_balance_path.
+            path = _monthly_balance_path(
+                blend, cash_start, equity_start, debt_start, equity_return, debt_return, checkins, transfer_months
+            )
+            for month, extra in zip(blend["months"], path["months"]):
+                month.update(extra)
+            if loan_enabled:
+                _merge_loan_into_months(blend["months"], loan_by_month)
+            cash_end, equity_end, debt_end = path["cash"], path["equity"], path["debt"]
+            equity_growth, debt_growth = path["equity_growth"], path["debt_growth"]
         else:
-            cash_start = cash_end_prev
-        cash_end = max(0.0, cash_start + net_cash_flow)
+            path = None
+            cash_end = max(0.0, cash_start + net_cash_flow)
 
-        # Withdrawal waterfall: cash -> debt -> equity
-        cash_shortfall = max(0.0, -(cash_start + net_cash_flow))
+            # Withdrawal waterfall: cash -> debt -> equity
+            cash_shortfall = max(0.0, -(cash_start + net_cash_flow))
 
-        # R/S - Equity start/growth (before withdrawal)
-        if "equity" in year_anchors:
-            observed_on, observed_equity = year_anchors["equity"]
-            equity_start = observed_equity / (1 + equity_return) ** _elapsed_year_fraction(observed_on)
-        else:
-            equity_start = equity_end_prev
-        equity_growth = equity_start * equity_return
+            # R/S - Equity growth (before withdrawal)
+            equity_growth = equity_start * equity_return
 
-        # U/V - Debt start/growth (before withdrawal)
-        if "debt" in year_anchors:
-            observed_on, observed_debt = year_anchors["debt"]
-            debt_start = observed_debt / (1 + debt_return) ** _elapsed_year_fraction(observed_on)
-        else:
-            debt_start = debt_end_prev
-        debt_growth = debt_start * debt_return
+            # U/V - Debt growth (before withdrawal)
+            debt_growth = debt_start * debt_return
 
-        debt_withdrawal = min(cash_shortfall, debt_start + debt_growth)
-        equity_withdrawal = max(0.0, cash_shortfall - (debt_start + debt_growth))
+            debt_withdrawal = min(cash_shortfall, debt_start + debt_growth)
+            equity_withdrawal = max(0.0, cash_shortfall - (debt_start + debt_growth))
 
-        # T/W - Equity/Debt end
-        equity_end = equity_start + equity_growth - equity_withdrawal
-        debt_end = debt_start + debt_growth - debt_withdrawal
-
-        # Journal invest/withdraw transfers between buckets (after the
-        # waterfall, so they never trigger it).
-        year_transfers = transfer_deltas.get(year)
-        if year_transfers:
-            cash_end = max(0.0, cash_end + year_transfers["cash"])
-            equity_end += year_transfers["equity"]
-            debt_end += year_transfers["debt"]
+            # T/W - Equity/Debt end
+            equity_end = equity_start + equity_growth - equity_withdrawal
+            debt_end = debt_start + debt_growth - debt_withdrawal
 
         # X - Total Portfolio (year-end snapshot only; does not feed back
         # into equity_end/debt_end).
@@ -522,10 +636,13 @@ def run_projection(
                 "loan_prepayment": round(loan_prepayment, 4),
                 "loan_balance_end": None if loan_year["closing"] is None else round(loan_year["closing"], 4),
             })
-        if year_anchors:
-            rows[-1]["anchored"] = {bucket: pair[0].isoformat() for bucket, pair in year_anchors.items()}
-        if year_transfers:
-            rows[-1]["transfers"] = {bucket: round(value, 4) for bucket, value in year_transfers.items()}
+        if path is not None:
+            if path["checkin_months"]:
+                rows[-1]["checkin_months"] = path["checkin_months"]
+                for bucket in BUCKETS:
+                    rows[-1][f"{bucket}_adjustment"] = round(path["adjustments"][bucket], 4)
+            if path["transfer_totals"]:
+                rows[-1]["transfers"] = {b: round(v, 4) for b, v in path["transfer_totals"].items()}
 
         if actuals_enabled:
             if blend is None:

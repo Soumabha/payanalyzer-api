@@ -8,7 +8,8 @@ import journal
 from fake_journal_store import InMemoryJournalStore
 from loans import emi_from_tenure
 
-NOW = "2026-11-14T10:00:00"
+NOW = "2030-01-01T10:00:00"      # late enough that every example date below is in the past
+NOW_2026 = "2026-11-14T10:00:00"
 TODAY = date(2026, 11, 14)
 
 
@@ -298,3 +299,49 @@ def test_sql_journal_store_opens_a_connection_that_can_cross_worker_threads(monk
     monkeypatch.setattr(journal_data, "get_db_connection", fake_open)
     journal_data.SqliteJournalStore()
     assert seen == {"check_same_thread": False}
+
+
+# -- future-dated entries ------------------------------------------------------------------
+# Things that have happened can't be dated in the future; planned things can.
+
+
+def test_recorded_facts_cannot_be_dated_in_the_future():
+    store = store_with_loan(as_of="2026-10-31")
+    for call in (
+        lambda: journal.record_check_in(store, NOW_2026, as_of="2026-11-15", cash_lakhs=1.0),
+        lambda: journal.add_prepayment(store, NOW_2026, entry_date="2026-12-01", amount_lakhs=1.0),
+        lambda: journal.add_loan_statement(store, NOW_2026, as_of="2027-01-31", outstanding_lakhs=40.0),
+        lambda: journal.add_transfer(store, NOW_2026, kind="invest", entry_date="2026-11-30", amount_lakhs=1.0, bucket="equity"),
+        lambda: journal.setup_loan(InMemoryJournalStore(), NOW_2026, name="x", outstanding_lakhs=1, as_of="2026-12-01",
+                                   annual_rate_pct=9, emi_lakhs=1),
+    ):
+        with pytest.raises(journal.JournalError, match="in the future"):
+            call()
+
+
+def test_nothing_is_stored_when_a_future_date_is_refused():
+    store = store_with_loan(as_of="2026-10-31")
+    before = (len(store.observations()), len(store.entries()))
+    with pytest.raises(journal.JournalError):
+        journal.record_check_in(store, NOW_2026, as_of="2027-01-01", cash_lakhs=1.0, equity_lakhs=2.0)
+    assert (len(store.observations()), len(store.entries())) == before
+
+
+def test_today_itself_is_allowed():
+    store = store_with_loan(as_of="2026-10-31")
+    journal.record_check_in(store, NOW_2026, as_of="2026-11-14", cash_lakhs=1.0)
+    journal.add_prepayment(store, NOW_2026, entry_date="2026-11-14", amount_lakhs=1.0)
+
+
+def test_planned_things_may_still_be_dated_in_the_future():
+    store = store_with_loan(as_of="2026-10-31")
+    journal.add_income(store, NOW_2026, entry_date="2028-05-01", amount_lakhs=4.0)
+    journal.add_loan_terms(store, NOW_2026, effective_from="2027-04-01", annual_rate_pct=10.0, emi_lakhs=0.7)
+    assert journal.extra_income_by_year(store) == {2028: 4.0}
+
+
+def test_a_statement_balance_with_a_terms_change_counts_as_a_recorded_fact():
+    store = store_with_loan(as_of="2026-10-31")
+    with pytest.raises(journal.JournalError, match="in the future"):
+        journal.add_loan_terms(store, NOW_2026, effective_from="2027-04-01", annual_rate_pct=10.0, emi_lakhs=0.7,
+                               statement_balance_lakhs=44.0)

@@ -8,8 +8,11 @@ fake_journal_store.InMemoryJournalStore). Clock values (`now`, `today`) are
 always passed in. Amounts are lakhs.
 
 Only structural checks live here (a date must parse, a bucket must be one of
-the known ones, the loan being referred to must exist). There are deliberately
-no business-rule validations (sign or size of amounts, rate ranges, ...).
+the known ones, the loan being referred to must exist) plus one rule: things
+that have happened (balances, check-ins, prepayments, transfers) can't be dated
+in the future. Planned things (extra income, a future rate change) can. There
+are deliberately no other business-rule validations (sign or size of amounts,
+rate ranges, ...).
 """
 
 from datetime import date
@@ -40,6 +43,20 @@ def _iso(value, field="date") -> str:
         raise JournalError(f"{field} must be a YYYY-MM-DD date") from None
 
 
+def _today(now: str) -> str:
+    return now[:10]
+
+
+def _recorded_date(value, now, field="date") -> str:
+    """A date for something that HAS happened (a balance, a payment, a move of
+    money): it can't be in the future. Planned things (extra income, a future
+    rate change) use _iso() and may be."""
+    iso = _iso(value, field)
+    if iso > _today(now):
+        raise JournalError(f"{field} {iso} is in the future; only things that have happened can be recorded.")
+    return iso
+
+
 # --------------------------------------------------------------------------- #
 # Loan
 # --------------------------------------------------------------------------- #
@@ -58,7 +75,7 @@ def setup_loan(store, now, *, name, outstanding_lakhs, as_of, annual_rate_pct, e
         raise JournalError("A loan is already set up. Record rate/EMI changes and prepayments against it instead.")
     if emi_lakhs is None and remaining_months is None:
         raise JournalError("Provide either emi_lakhs or remaining_months.")
-    as_of = _iso(as_of, "as_of")
+    as_of = _recorded_date(as_of, now, "as_of")
     if emi_lakhs is None:
         emi_lakhs = emi_from_tenure(outstanding_lakhs, annual_rate_pct, remaining_months)
     loan_id = store.add_loan(name, now)
@@ -74,6 +91,8 @@ def add_loan_terms(store, now, *, effective_from, annual_rate_pct, emi_lakhs, no
     statement balance as of the effective date."""
     loan = _require_loan(store)
     effective_from = _iso(effective_from, "effective_from")
+    if statement_balance_lakhs is not None:
+        _recorded_date(effective_from, now, "effective_from (a statement balance is a recorded fact)")
     terms_id = store.add_terms(loan["id"], effective_from, annual_rate_pct, emi_lakhs, note, now)
     if statement_balance_lakhs is not None:
         store.add_observation(
@@ -97,7 +116,7 @@ def void_loan_terms(store, now, terms_id):
 def add_prepayment(store, now, *, entry_date, amount_lakhs, note=None):
     loan = _require_loan(store)
     entry_id = store.add_entry({
-        "kind": "prepayment", "entry_date": _iso(entry_date, "entry_date"), "amount_lakhs": amount_lakhs,
+        "kind": "prepayment", "entry_date": _recorded_date(entry_date, now, "entry_date"), "amount_lakhs": amount_lakhs,
         "ref_id": loan["id"], "note": note, "created_at": now,
     })
     store.commit()
@@ -107,7 +126,9 @@ def add_prepayment(store, now, *, entry_date, amount_lakhs, note=None):
 def add_loan_statement(store, now, *, as_of, outstanding_lakhs, note=None):
     """A bank-statement balance (a loan observation)."""
     loan = _require_loan(store)
-    obs_id = store.add_observation("loan", loan["id"], _iso(as_of, "as_of"), outstanding_lakhs, "statement", note, now)
+    obs_id = store.add_observation(
+        "loan", loan["id"], _recorded_date(as_of, now, "as_of"), outstanding_lakhs, "statement", note, now
+    )
     store.commit()
     return obs_id
 
@@ -188,7 +209,7 @@ def record_check_in(store, now, *, as_of, cash_lakhs=None, equity_lakhs=None, de
     supplied = {bucket: value for bucket, value in balances.items() if value is not None}
     if not supplied:
         raise JournalError("A check-in needs at least one balance.")
-    as_of = _iso(as_of, "as_of")
+    as_of = _recorded_date(as_of, now, "as_of")
     loan = get_loan(store)
     if "loan" in supplied and loan is None:
         raise JournalError("No loan is set up yet, so there is no loan balance to check in.")
@@ -312,7 +333,7 @@ def add_transfer(store, now, *, kind, entry_date, amount_lakhs, bucket, note=Non
         raise JournalError(f"bucket must be one of {INVESTABLE}")
     from_bucket, to_bucket = ("cash", bucket) if kind == "invest" else (bucket, "cash")
     entry_id = store.add_entry({
-        "kind": kind, "entry_date": _iso(entry_date, "entry_date"), "amount_lakhs": amount_lakhs,
+        "kind": kind, "entry_date": _recorded_date(entry_date, now, "entry_date"), "amount_lakhs": amount_lakhs,
         "from_bucket": from_bucket, "to_bucket": to_bucket, "note": note, "created_at": now,
     })
     store.commit()

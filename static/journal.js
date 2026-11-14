@@ -56,7 +56,8 @@ function fieldHtml(field) {
         control = `<select id="${id}">${field.options.map(([v, l]) => `<option value="${escapeHtml(v)}" ${String(v) === String(field.value) ? "selected" : ""}>${escapeHtml(l)}</option>`).join("")}</select>`;
     } else {
         const step = field.type === "number" ? ` step="${field.step || "0.01"}"` : "";
-        control = `<input type="${field.type}" id="${id}"${step} value="${value}" ${field.required ? "required" : ""}>`;
+        const max = field.max ? ` max="${escapeHtml(field.max)}"` : "";
+        control = `<input type="${field.type}" id="${id}"${step}${max} value="${value}" ${field.required ? "required" : ""}>`;
     }
     return `<div class="form-field"><label for="${id}">${escapeHtml(field.label)}</label>${control}</div>`;
 }
@@ -140,7 +141,7 @@ function renderCheckIns(checkIns) {
 function openCheckIn() {
     const hasLoan = lastLoan && lastLoan.loan;
     const fields = [
-        { name: "as_of", label: "Date", type: "date", value: todayLocal(), required: true },
+        { name: "as_of", label: "Date", type: "date", value: todayLocal(), max: todayLocal(), required: true },
         { name: "cash_lakhs", label: "Cash (Lakhs)", type: "number" },
         { name: "equity_lakhs", label: "Equity portfolio (Lakhs)", type: "number" },
         { name: "debt_lakhs", label: "Debt portfolio (Lakhs)", type: "number" },
@@ -224,7 +225,7 @@ function openLoanSetup() {
         fields: [
             { name: "name", label: "Name", type: "text", value: "Home loan", required: true },
             { name: "outstanding_lakhs", label: "Outstanding principal (Lakhs)", type: "number", value: legacy.loan_outstanding_lakhs, required: true },
-            { name: "as_of", label: "As of", type: "date", value: todayLocal(), required: true },
+            { name: "as_of", label: "As of", type: "date", value: todayLocal(), max: todayLocal(), required: true },
             { name: "annual_rate_pct", label: "Annual interest rate (%)", type: "number", required: true },
             { name: "emi_lakhs", label: "Monthly EMI (Lakhs)", type: "number", step: "0.0001", value: monthlyEmi },
             { name: "remaining_months", label: "Or months remaining", type: "number", step: "1" },
@@ -255,7 +256,7 @@ function openStatement() {
         title: "Update from statement",
         intro: "The balance your bank shows. The schedule restarts from it, and any difference from the computed balance is shown.",
         fields: [
-            { name: "as_of", label: "As of", type: "date", value: todayLocal(), required: true },
+            { name: "as_of", label: "As of", type: "date", value: todayLocal(), max: todayLocal(), required: true },
             { name: "outstanding_lakhs", label: "Outstanding principal (Lakhs)", type: "number", required: true },
             { name: "note", label: "Note (optional)", type: "text" },
         ],
@@ -268,7 +269,7 @@ function openPrepayment() {
         title: "Add loan prepayment",
         intro: "Paid from your cash. It reduces the principal and shortens the tenure; the EMI stays the same.",
         fields: [
-            { name: "entry_date", label: "Date", type: "date", value: todayLocal(), required: true },
+            { name: "entry_date", label: "Date", type: "date", value: todayLocal(), max: todayLocal(), required: true },
             { name: "amount_lakhs", label: "Amount (Lakhs)", type: "number", required: true },
             { name: "note", label: "Note (optional)", type: "text" },
         ],
@@ -347,7 +348,7 @@ function openTransfer(kind) {
             ? "Moves money out of cash into the chosen investment. Your next check-in overrides any drift."
             : "Moves money from the chosen investment back into cash.",
         fields: [
-            { name: "entry_date", label: "Date", type: "date", value: todayLocal(), required: true },
+            { name: "entry_date", label: "Date", type: "date", value: todayLocal(), max: todayLocal(), required: true },
             { name: "amount_lakhs", label: "Amount (Lakhs)", type: "number", required: true },
             { name: "bucket", label: invest ? "Into" : "From", type: "select", value: "equity", options: [["equity", "Equity"], ["debt", "Debt"]] },
             { name: "note", label: "Note (optional)", type: "text" },

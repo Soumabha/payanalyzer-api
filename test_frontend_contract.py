@@ -63,6 +63,8 @@ def _engine_row_keys() -> set[str]:
     )
     journal_row = run_projection(
         DEFAULT_ASSUMPTIONS,
+        actual_monthly_spend={},
+        today=today,
         loan_timeline=timeline,
         observations=[{"bucket": "cash", "as_of": f"{PROJECTION_START_YEAR}-03-01", "amount_lakhs": 1.0}],
         transfers=[{"date": f"{PROJECTION_START_YEAR}-04-01", "amount_lakhs": 1.0,
@@ -72,10 +74,18 @@ def _engine_row_keys() -> set[str]:
 
 
 def _engine_month_keys() -> set[str]:
+    """Keys of a month sub-row, with a loan and a check-in so every optional
+    field (loan columns, check-in variances) is present."""
+    timeline = build_timeline(
+        [{"as_of": f"{PROJECTION_START_YEAR - 1}-12-31", "amount_lakhs": 10.0}],
+        [{"effective_from": f"{PROJECTION_START_YEAR - 1}-12-31", "annual_rate_pct": 9.0, "emi_lakhs": 1.0}],
+        [], PROJECTION_START_YEAR, PROJECTION_END_YEAR,
+    )
     row = run_projection(
-        DEFAULT_ASSUMPTIONS, actual_monthly_spend={}, today=date(PROJECTION_START_YEAR, 6, 1)
+        DEFAULT_ASSUMPTIONS, actual_monthly_spend={}, today=date(PROJECTION_START_YEAR, 6, 1), loan_timeline=timeline,
+        observations=[{"bucket": "cash", "as_of": f"{PROJECTION_START_YEAR}-03-01", "amount_lakhs": 1.0}],
     )[0]
-    return set(row["months"][0])
+    return set(row["months"][0]) | set(row["months"][2])
 
 
 def test_every_table_column_exists_in_engine_output():
@@ -94,7 +104,8 @@ def test_every_row_field_read_by_the_chart_and_milestones_exists_in_engine_outpu
 
 def test_every_month_field_read_by_the_sub_row_renderer_exists_in_engine_output():
     used = set(re.findall(r"\bmonth\.([a-z_]+)\b", PROJECTION_JS))
-    assert {"status", "expense", "income", "net", "actual_spend"} <= used, "parser no longer sees month fields"
+    assert {"status", "expense", "income", "net", "actual_spend", "cash_end", "checkin"} <= used, \
+        "parser no longer sees month fields"
     assert used <= _engine_month_keys()
 
 
