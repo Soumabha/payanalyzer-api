@@ -8,7 +8,8 @@ from splitwise import Splitwise
 from splitwise.exception import SplitwiseBaseException
 from requests.exceptions import RequestException
 from dotenv import load_dotenv
-from splitwise_data import create_schema, upsert_expense, get_latest_expense_update, get_db_connection
+from splitwise_data import create_schema, upsert_expense, get_latest_expense_update, get_db_connection, SqliteExpenseStore
+from actual_spend import load_actual_monthly_spend
 from projections import run_projection, PROJECTION_START_YEAR, PROJECTION_END_YEAR
 from projection_data import (
     create_projection_schema,
@@ -303,11 +304,25 @@ def remove_extra_income(year: int):
     return get_extra_income()
 
 @app.get("/api/fire-projection")
-def get_fire_projection(start_year: int = Query(PROJECTION_START_YEAR), end_year: int = Query(PROJECTION_END_YEAR)):
+def get_fire_projection(
+    start_year: int = Query(PROJECTION_START_YEAR),
+    end_year: int = Query(PROJECTION_END_YEAR),
+    actuals: bool = Query(False),
+):
     assumptions = get_assumptions()
     extra_income = get_extra_income_by_year()
+    actual_monthly_spend = None
+    if actuals:
+        store = SqliteExpenseStore()
+        try:
+            actual_monthly_spend = load_actual_monthly_spend(store, start_year)
+        finally:
+            store.close()
     try:
-        return run_projection(assumptions, extra_income, start_year=start_year, end_year=end_year)
+        return run_projection(
+            assumptions, extra_income, start_year=start_year, end_year=end_year,
+            actual_monthly_spend=actual_monthly_spend,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

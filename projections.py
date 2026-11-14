@@ -7,6 +7,7 @@ into a year-by-year projection table whose columns mirror the original
 planning spreadsheet's columns A-X (year through total portfolio).
 """
 
+from datetime import date
 from typing import Any
 
 # Fixed horizon start/end used as the API defaults and as the anchor for
@@ -81,20 +82,113 @@ def validate_assumptions(assumptions: dict[str, Any]) -> None:
         raise ValueError(f"Missing assumption fields: {missing}")
 
 
+def _blend_year(
+    year: int,
+    today: date,
+    actual_monthly_spend: dict[str, float],
+    assumed_total_expense: float,
+    emi_amount: float,
+    total_income: float,
+) -> dict[str, Any]:
+    """
+    Month-by-month view of one year that is not wholly in the future.
+
+    Month status, relative to `today`:
+      actual       - month already closed and has recorded spend: expense is
+                     that spend plus the assumed EMI (EMI is paid straight from
+                     the bank, so it never appears in the expense records).
+      no_data      - month closed but has no recorded spend (most likely a
+                     sync/import gap): falls back to the forecast and is
+                     flagged so the user can fix the gap.
+      in_progress  - the current month: forecast is used until it closes; the
+                     spend recorded so far is shown for information only.
+      forecast     - a month still to come in the current year.
+
+    Forecast expense for a month is the year's assumed total / 12. Income is
+    always the assumed annual figure / 12 (there is no income data source).
+    """
+    forecast_month_expense = assumed_total_expense / 12
+    income_month = total_income / 12
+    emi_month = emi_amount / 12
+
+    months = []
+    year_expense = 0.0
+    actual_spend_total = 0.0
+    no_data_months = 0
+    all_actual = True
+
+    for month_number in range(1, 13):
+        key = f"{year}-{month_number:02d}"
+        recorded = actual_monthly_spend.get(key)
+        if (year, month_number) < (today.year, today.month):
+            if recorded is None:
+                status = "no_data"
+                no_data_months += 1
+            else:
+                status = "actual"
+        elif (year, month_number) == (today.year, today.month):
+            status = "in_progress"
+        else:
+            status = "forecast"
+        if status != "actual":
+            all_actual = False
+
+        if status == "actual":
+            expense = recorded + emi_month
+            actual_spend_total += recorded
+        else:
+            expense = forecast_month_expense
+
+        months.append({
+            "month": key,
+            "status": status,
+            "expense": round(expense, 4),
+            "actual_spend": round(recorded, 4) if recorded is not None and status in ("actual", "in_progress") else None,
+            "forecast_expense": round(forecast_month_expense, 4),
+            "income": round(income_month, 4),
+            "net": round(income_month - expense, 4),
+        })
+        year_expense += expense
+
+    return {
+        "total_expense": year_expense,
+        "months": months,
+        "actual_spend": actual_spend_total,
+        "no_data_months": no_data_months,
+        "source": "actual" if all_actual else "blended",
+    }
+
+
 def run_projection(
     assumptions: dict[str, Any],
     extra_income_by_year: dict[int, float] | None = None,
     start_year: int = PROJECTION_START_YEAR,
     end_year: int = PROJECTION_END_YEAR,
+    actual_monthly_spend: dict[str, float] | None = None,
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
     """
     Returns one dict per year from start_year to end_year (inclusive),
     matching spreadsheet columns A-X. The formulas are documented inline,
     step by step, in the loop below; test_projections.py holds verified
     worked examples for each of them.
+
+    Actuals mode (opt-in): pass `actual_monthly_spend` - a {"YYYY-MM": lakhs}
+    dict of recorded spend for the months that have any - and years up to
+    `today`'s year are blended month by month (see _blend_year). Those rows
+    gain `expense_source`, `assumed_total_expense`, `actual_spend`,
+    `no_data_months` and a 12-entry `months` list; future rows only gain
+    `expense_source: "forecast"`. Only that year's total expense (and so its
+    cash flow) changes: the assumed base-expense chain that kids/parents and
+    all later years derive from is never re-based on actuals. Without
+    `actual_monthly_spend` the output is exactly the plain forecast, with no
+    extra keys. `today` is injectable for tests and defaults to date.today().
     """
     validate_assumptions(assumptions)
     extra_income_by_year = extra_income_by_year or {}
+    actuals_enabled = actual_monthly_spend is not None
+    if actuals_enabled and today is None:
+        today = date.today()
 
     inflation = assumptions["inflation_pct"] / 100
     education_inflation = assumptions["education_inflation_pct"] / 100
@@ -211,6 +305,17 @@ def run_projection(
         # L - Total Income
         total_income = rental_income + salary + extra_income
 
+        # Actuals mode only: replace this year's assumed total expense with
+        # the month-by-month blend. Everything above (the assumed chains) is
+        # untouched, so later years are unaffected.
+        assumed_total_expense = total_expense
+        blend = None
+        if actuals_enabled and year <= today.year:
+            blend = _blend_year(
+                year, today, actual_monthly_spend, assumed_total_expense, emi_amount, total_income
+            )
+            total_expense = blend["total_expense"]
+
         # M/N - Net Expense / Reserve Contribution
         net_expense = max(0.0, total_expense - total_income)
         reserve_contribution = max(0.0, total_income - total_expense)
@@ -268,6 +373,18 @@ def run_projection(
             "debt_end": round(debt_end, 4),
             "total_portfolio": round(total_portfolio, 4),
         })
+
+        if actuals_enabled:
+            if blend is None:
+                rows[-1]["expense_source"] = "forecast"
+            else:
+                rows[-1].update({
+                    "expense_source": blend["source"],
+                    "assumed_total_expense": round(assumed_total_expense, 4),
+                    "actual_spend": round(blend["actual_spend"], 4),
+                    "no_data_months": blend["no_data_months"],
+                    "months": blend["months"],
+                })
 
         cash_end_prev = cash_end
         equity_end_prev = equity_end

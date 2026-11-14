@@ -171,9 +171,75 @@ function buildGroupHeaderRow() {
     return html;
 }
 
+const MONTH_STATUS = {
+    actual: { label: "Actual", cls: "month-actual" },
+    in_progress: { label: "In progress (forecast used)", cls: "month-in-progress" },
+    forecast: { label: "Forecast", cls: "month-forecast" },
+    no_data: { label: "No data - forecast used", cls: "month-no-data" },
+};
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Years whose month sub-rows are open. null = not initialised yet (first
+// render opens the current, partly-actual year); afterwards it persists
+// across re-renders so saving assumptions doesn't collapse what you opened.
+let expandedYears = null;
+
+function yearBadges(row) {
+    let html = "";
+    if (row.expense_source === "actual") {
+        html += `<span class="source-badge source-actual">Actual</span>`;
+    } else if (row.expense_source === "blended") {
+        html += `<span class="source-badge source-blended">Blended</span>`;
+    }
+    if (row.no_data_months > 0) {
+        html += `<span class="source-badge source-gap" title="Closed months with no recorded expenses - the forecast was used. Sync or import them.">${row.no_data_months} gap${row.no_data_months > 1 ? "s" : ""}</span>`;
+    }
+    return html;
+}
+
+// A month sub-row only has data for a few columns; the rest stay blank.
+function monthCellValue(month, colKey) {
+    switch (colKey) {
+        case "year": return null;
+        case "total_expense": return month.expense;
+        case "total_income": return month.income;
+        case "net_expense": return Math.max(0, -month.net);
+        case "reserve_contribution": return Math.max(0, month.net);
+        default: return undefined;
+    }
+}
+
+function renderMonthRows(row) {
+    let html = "";
+    row.months.forEach((month) => {
+        const status = MONTH_STATUS[month.status] || { label: escapeHtml(month.status), cls: "" };
+        const monthIndex = parseInt(month.month.slice(5, 7), 10) - 1;
+        const spendNote = month.actual_spend !== null
+            ? ` title="Recorded spend ${month.actual_spend.toFixed(2)} L${month.status === "actual" ? " + assumed EMI" : " so far this month"}"`
+            : "";
+        html += `<tr class="month-row ${status.cls}${expandedYears.has(row.year) ? "" : " hidden"}" data-month-of="${row.year}"${spendNote}>`;
+        COLUMN_DEFS.forEach((col) => {
+            const groupClass = col.group ? `col-group-${col.group}` : "";
+            if (col.key === "year") {
+                html += `<td class="${groupClass}">${MONTH_NAMES[monthIndex]} &middot; ${status.label}</td>`;
+                return;
+            }
+            const value = monthCellValue(month, col.key);
+            html += `<td class="${groupClass}">${value === undefined ? "" : fmt(value, col.plain)}</td>`;
+        });
+        html += "</tr>";
+    });
+    return html;
+}
+
 function renderProjectionTable(rows, milestones) {
     const container = document.getElementById("projectionTable");
     container.classList.add("dense-table");
+    if (expandedYears === null) {
+        const current = rows.find((row) => row.expense_source === "blended");
+        expandedYears = new Set(current ? [current.year] : []);
+    }
     let html = "<table><thead>";
     html += buildGroupHeaderRow();
     html += "<tr>";
@@ -184,18 +250,36 @@ function renderProjectionTable(rows, milestones) {
     html += "</tr></thead><tbody>";
     rows.forEach((row) => {
         const rowClass = milestones.has(row.year) ? "milestone-row" : "";
+        const hasMonths = Array.isArray(row.months);
         html += `<tr class="${rowClass}">`;
         COLUMN_DEFS.forEach((col) => {
             const groupClass = col.group ? `col-group-${col.group}` : "";
+            if (col.key === "year" && hasMonths) {
+                const open = expandedYears.has(row.year);
+                html += `<td class="${groupClass} year-toggle${open ? " expanded" : ""}" data-year="${row.year}"><span class="chevron">&#9656;</span>${row.year}${yearBadges(row)}</td>`;
+                return;
+            }
             html += `<td class="${groupClass}">${fmt(row[col.key], col.plain)}</td>`;
         });
         html += "</tr>";
+        if (hasMonths) html += renderMonthRows(row);
     });
     html += "</tbody></table>";
     container.innerHTML = html;
+
+    container.querySelectorAll(".year-toggle").forEach((cell) => {
+        cell.addEventListener("click", () => {
+            const year = parseInt(cell.dataset.year, 10);
+            if (expandedYears.has(year)) expandedYears.delete(year); else expandedYears.add(year);
+            cell.classList.toggle("expanded", expandedYears.has(year));
+            container.querySelectorAll(`tr[data-month-of="${year}"]`).forEach((tr) => {
+                tr.classList.toggle("hidden", !expandedYears.has(year));
+            });
+        });
+    });
 }
 
-function renderPortfolioChart(rows) {
+function renderPortfolioChart(rows, planRows) {
     const canvas = document.getElementById("portfolioChart");
     const ctx = canvas.getContext("2d");
     const totalGradient = ctx.createLinearGradient(0, 0, 0, 400);
@@ -209,7 +293,18 @@ function renderPortfolioChart(rows) {
             labels: rows.map((r) => r.year),
             datasets: [
                 {
-                    label: "Total Portfolio",
+                    label: "Plan (assumptions only)",
+                    data: planRows.map((r) => r.total_portfolio),
+                    borderColor: "#a0a5b8",
+                    backgroundColor: "transparent",
+                    borderWidth: 2,
+                    borderDash: [8, 4],
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 0,
+                },
+                {
+                    label: "Total Portfolio (actual + forecast)",
                     data: rows.map((r) => r.total_portfolio),
                     borderColor: "#00d2d3",
                     backgroundColor: totalGradient,
@@ -284,10 +379,16 @@ async function refreshProjection() {
     const assumptionsData = await assumptionsRes.json();
     const milestones = milestoneYearsFrom(assumptionsData.assumptions);
 
-    const res = await fetch("/api/fire-projection");
-    const rows = await res.json();
+    // Plan = assumptions only; the table and the main chart lines blend in
+    // recorded spend for months that have already closed.
+    const [planRes, actualRes] = await Promise.all([
+        fetch("/api/fire-projection"),
+        fetch("/api/fire-projection?actuals=true"),
+    ]);
+    const planRows = await planRes.json();
+    const rows = await actualRes.json();
     renderProjectionTable(rows, milestones);
-    renderPortfolioChart(rows);
+    renderPortfolioChart(rows, planRows);
 }
 
 async function refreshAll() {

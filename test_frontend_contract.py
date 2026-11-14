@@ -13,6 +13,8 @@ Pure and DB-free: reads source files only.
 import re
 from pathlib import Path
 
+from datetime import date
+
 from projections import (
     ASSUMPTION_FIELDS,
     DEFAULT_ASSUMPTIONS,
@@ -33,12 +35,31 @@ def _js_block(name: str) -> str:
     return match.group(1)
 
 
+def _js_block_object(name: str) -> str:
+    match = re.search(rf"const {name} = \{{(.*?)\n\}};", PROJECTION_JS, re.DOTALL)
+    assert match, f"{name} not found in static/projection.js"
+    return match.group(1)
+
+
 def _strings(block: str) -> list[str]:
     return re.findall(r'"([^"]+)"', block)
 
 
 def _engine_row_keys() -> set[str]:
-    return set(run_projection(DEFAULT_ASSUMPTIONS)[0])
+    """Keys of both response shapes: the plain forecast and the actuals mode
+    (whose current-year row also carries the month sub-rows)."""
+    plain = set(run_projection(DEFAULT_ASSUMPTIONS)[0])
+    blended = run_projection(
+        DEFAULT_ASSUMPTIONS, actual_monthly_spend={}, today=date(PROJECTION_START_YEAR, 6, 1)
+    )[0]
+    return plain | set(blended)
+
+
+def _engine_month_keys() -> set[str]:
+    row = run_projection(
+        DEFAULT_ASSUMPTIONS, actual_monthly_spend={}, today=date(PROJECTION_START_YEAR, 6, 1)
+    )[0]
+    return set(row["months"][0])
 
 
 def test_every_table_column_exists_in_engine_output():
@@ -53,6 +74,17 @@ def test_every_row_field_read_by_the_chart_and_milestones_exists_in_engine_outpu
     used = set(re.findall(r"\b(?:row|r)\.([a-z_]+)\b", PROJECTION_JS))
     assert {"year", "total_portfolio"} <= used, "parser no longer sees the expected row fields"
     assert used <= _engine_row_keys()
+
+
+def test_every_month_field_read_by_the_sub_row_renderer_exists_in_engine_output():
+    used = set(re.findall(r"\bmonth\.([a-z_]+)\b", PROJECTION_JS))
+    assert {"status", "expense", "income", "net", "actual_spend"} <= used, "parser no longer sees month fields"
+    assert used <= _engine_month_keys()
+
+
+def test_every_month_status_the_engine_emits_has_a_style_and_label():
+    statuses = set(re.findall(r'(\w+):\s*\{\s*label:', _js_block_object("MONTH_STATUS")))
+    assert statuses == {"actual", "in_progress", "forecast", "no_data"}
 
 
 def test_js_assumption_fields_match_the_backend_exactly():

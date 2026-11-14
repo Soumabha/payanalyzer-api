@@ -39,6 +39,13 @@
                 <section id="projection-table-section">
                     <h2><i class="fa-solid fa-table"></i> Year-by-Year Projection</h2>
                     <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Highlighted rows mark years your key assumptions change (kids/parents expense start, retirement, loan end) — use them to cross-check against your spreadsheet.</div>
+                    <div class="status-legend">
+                        <span><span class="swatch" style="background:#00d2d3"></span>Actual month (recorded spend + assumed EMI)</span>
+                        <span><span class="swatch" style="background:#a99cff"></span>In progress (forecast used until it closes)</span>
+                        <span><span class="swatch" style="background:#a0a5b8"></span>Forecast</span>
+                        <span><span class="swatch" style="background:#ff9f40"></span>No data: closed month with no expenses, forecast used - sync or import it</span>
+                    </div>
+                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Click a year with a badge to expand its months. Income is always the assumed figure; only expenses use recorded actuals.</div>
                     <div id="projectionTable" class="table-container"></div>
                 </section>
             </div>

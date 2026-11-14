@@ -182,6 +182,19 @@ class SqliteExpenseStore:
             )
         ]
 
+    def monthly_totals(self, since_date):
+        """Total cost per 'YYYY-MM' month, in the stored unit (rupees), over live
+        rows of every source and group dated on or after since_date."""
+        return [
+            dict(r)
+            for r in self._conn.execute(
+                "SELECT strftime('%Y-%m', date) AS month, SUM(cost) AS total FROM expenses "
+                "WHERE deleted_at IS NULL AND date IS NOT NULL AND date >= ? "
+                "GROUP BY month ORDER BY month",
+                (since_date,),
+            )
+        ]
+
     def latest_api_update(self, group_id):
         """Newest updated_at among a group's API rows (None if there are none).
 

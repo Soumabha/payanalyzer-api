@@ -672,3 +672,62 @@ td i {
 .drawer .extra-income-form input[type="text"] {
     min-width: 0;
 }
+
+/* --- Projection: actual vs forecast month sub-rows --- */
+.dense-table .year-toggle {
+    cursor: pointer;
+    user-select: none;
+}
+.dense-table .year-toggle .chevron {
+    display: inline-block;
+    width: 1em;
+    transition: transform 0.15s ease;
+}
+.dense-table .year-toggle.expanded .chevron {
+    transform: rotate(90deg);
+}
+.dense-table .source-badge {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.dense-table .source-badge.source-actual { background: rgba(0, 210, 211, 0.2); color: #00d2d3; }
+.dense-table .source-badge.source-blended { background: rgba(108, 92, 231, 0.25); color: #a99cff; }
+.dense-table .source-badge.source-gap { background: rgba(255, 159, 64, 0.2); color: #ff9f40; }
+
+.dense-table tr.month-row td { font-size: 0.85em; }
+.dense-table tr.month-row td:first-child { padding-left: 1.6em; }
+.dense-table tr.month-row.month-actual td { color: #00d2d3; font-weight: 600; }
+.dense-table tr.month-row.month-in-progress td {
+    color: #a99cff;
+    font-style: italic;
+    border-top: 1px dashed rgba(169, 156, 255, 0.5);
+    border-bottom: 1px dashed rgba(169, 156, 255, 0.5);
+}
+.dense-table tr.month-row.month-forecast td { color: var(--text-muted); }
+.dense-table tr.month-row.month-no-data td {
+    color: #ff9f40;
+    background: repeating-linear-gradient(135deg, rgba(255, 159, 64, 0.14) 0 6px, transparent 6px 12px);
+}
+.dense-table tr.month-row.hidden { display: none; }
+
+.status-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin: 8px 0 12px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+.status-legend .swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 5px;
+    border-radius: 2px;
+    vertical-align: middle;
+}
