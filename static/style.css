@@ -928,15 +928,37 @@ td i {
     border-top: 1px solid var(--border-color);
 }
 .loan-block:first-child { margin-top: 0; padding-top: 0; border-top: none; }
-.loan-header {
+.loan-toggle {
+    width: 100%;
     display: flex;
-    justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
-    gap: 12px;
-    margin-bottom: 12px;
+    gap: 10px 14px;
+    padding: 12px 16px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    color: var(--text-main);
+    font-family: inherit;
+    font-size: 1rem;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.2s ease;
 }
-.loan-header h3 { margin: 0; }
+.loan-toggle:hover { border-color: var(--accent); background: rgba(108, 92, 231, 0.12); }
+.loan-toggle .chevron {
+    display: inline-block;
+    width: 1em;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+}
+.loan-toggle.expanded .chevron { transform: rotate(90deg); }
+.loan-title { font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
+.loan-title i { color: var(--accent-secondary); }
+.loan-summary { color: var(--text-muted); font-size: 0.85rem; margin-left: auto; }
+.loan-body { padding-top: 14px; }
+.loan-body.hidden { display: none; }
+.loan-body-actions { justify-content: flex-start; margin-bottom: 12px; }
 .loan-block h4 {
     margin: 18px 0 8px;
     font-size: 0.95rem;

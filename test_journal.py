@@ -642,3 +642,88 @@ def test_future_dates_are_refused_for_every_loan_action():
         journal.add_loan_statement(store, NOW_2026, loan_id=2, as_of="2027-01-01", outstanding_lakhs=1.0)
     with pytest.raises(journal.JournalError, match="in the future"):
         journal.record_check_in(store, NOW_2026, as_of="2027-01-01", loan_balances={2: 1.0})
+
+
+# -- before a loan is entered, the old assumptions still apply -----------------------------
+#
+# Entering a loan changes nothing before it: months earlier than the loan's first
+# entry keep the flat-EMI assumption, and from that month on the loan's own schedule
+# takes over and carries on (the same way a check-in does).
+
+from projections import DEFAULT_ASSUMPTIONS, run_projection  # noqa: E402
+
+LEGACY = {"annual_emi_lakhs": 12.0, "loan_end_year": 2028}      # 1.0 L a month until the end of 2028
+
+
+def timeline_for(store, include_actuals=False, legacy=LEGACY, end=2040):
+    return {r["month"]: r for r in journal.projection_inputs(store, 2026, end, include_actuals, legacy)["loan_timeline"]}
+
+
+def test_months_before_the_loan_was_entered_use_the_flat_emi_assumption():
+    store = store_with_loan(as_of="2026-11-14", outstanding_lakhs=40.0, emi_lakhs=0.6, remaining_months=None)
+    months = timeline_for(store)
+    assert [months[m]["emi_paid"] for m in ("2026-01", "2026-06", "2026-10")] == [1.0, 1.0, 1.0]
+    assert months["2026-01"]["closing"] is None and months["2026-10"]["closing"] is None     # no loan balance yet
+    assert months["2026-01"]["interest"] == 0.0 and months["2026-01"]["principal"] == 0.0
+    assert months["2026-11"]["emi_paid"] == 0.6                                              # the loan takes over
+    assert months["2026-11"]["closing"] == 40.0
+    assert months["2026-12"]["emi_paid"] == 0.6 and months["2026-12"]["interest"] > 0
+    assert months["2027-06"]["emi_paid"] == 0.6                                              # and carries on
+
+
+def test_the_flat_emi_assumption_stops_after_its_end_year_even_before_the_loan():
+    store = store_with_loan(as_of="2029-12-01", outstanding_lakhs=40.0, emi_lakhs=0.6, remaining_months=None)
+    months = timeline_for(store)
+    assert months["2028-12"]["emi_paid"] == 1.0 and months["2029-01"]["emi_paid"] == 0.0
+    assert months["2029-11"]["emi_paid"] == 0.0 and months["2029-12"]["emi_paid"] == 0.6
+
+
+def test_without_a_legacy_assumption_months_before_the_loan_have_no_emi():
+    store = store_with_loan(as_of="2026-11-14", outstanding_lakhs=40.0, emi_lakhs=0.6, remaining_months=None)
+    assert timeline_for(store, legacy=None)["2026-03"]["emi_paid"] == 0.0
+
+
+def test_the_plan_view_also_keeps_the_older_numbers_before_the_loan():
+    store = store_with_loan(as_of="2026-11-14", outstanding_lakhs=40.0, emi_lakhs=0.6, remaining_months=None)
+    journal.add_loan_statement(store, NOW, loan_id=1, as_of="2026-12-20", outstanding_lakhs=30.0)
+    for include_actuals in (False, True):
+        months = timeline_for(store, include_actuals)
+        assert months["2026-05"]["emi_paid"] == 1.0, include_actuals
+
+
+def test_with_two_loans_the_flat_assumption_applies_until_the_earliest_entry():
+    store = store_with_loan(as_of="2026-08-10", outstanding_lakhs=40.0, emi_lakhs=0.6, remaining_months=None)
+    journal.setup_loan(store, NOW, name="Car", outstanding_lakhs=10.0, as_of="2026-11-02", annual_rate_pct=10.0, emi_lakhs=0.3)
+    months = timeline_for(store)
+    assert months["2026-07"]["emi_paid"] == 1.0                      # before any loan: the assumption
+    assert months["2026-08"]["emi_paid"] == 0.6                      # loan 1 entered; loan 2 not yet
+    assert months["2026-10"]["emi_paid"] == 0.6
+    assert months["2026-11"]["emi_paid"] == pytest.approx(0.9)      # loan 2 joins in its own month
+
+
+def test_a_prepayment_before_the_loan_was_entered_is_still_a_cash_outflow_on_top_of_the_assumption():
+    store = store_with_loan(as_of="2026-11-14", outstanding_lakhs=40.0, emi_lakhs=0.6, remaining_months=None)
+    journal.add_prepayment(store, NOW, loan_id=1, entry_date="2026-05-20", amount_lakhs=2.0)
+    months = timeline_for(store, include_actuals=True)
+    assert months["2026-05"]["emi_paid"] == 1.0 and months["2026-05"]["prepayment"] == 2.0
+
+
+def test_entering_a_loan_leaves_every_projected_month_before_it_unchanged():
+    """End to end: the year's EMI is the assumption for the months before the entry
+    and the loan's schedule from the entry month on."""
+    assumptions = {**DEFAULT_ASSUMPTIONS, "annual_emi_lakhs": 12.0, "loan_end_year": 2028}
+    store = store_with_loan(as_of="2026-11-14", outstanding_lakhs=40.0, emi_lakhs=0.6, remaining_months=None)
+    inputs = journal.projection_inputs(store, 2026, 2070, False, LEGACY)
+    before = run_projection(assumptions)                              # no loan at all
+    after = run_projection(assumptions, loan_timeline=inputs["loan_timeline"])
+    assert before[0]["emi_amount"] == 12.0
+    assert after[0]["emi_amount"] == pytest.approx(10 * 1.0 + 2 * 0.6, abs=1e-3)       # 10 old months + Nov and Dec of the loan
+    assert after[1]["emi_amount"] == pytest.approx(12 * 0.6, abs=1e-3)                  # then the loan alone
+    # nothing before November moved: with the blend on, Jan-Oct months are identical
+    spend = {f"2026-{m:02d}": 1.0 for m in range(1, 11)}
+    today = date(2026, 11, 14)
+    a = run_projection(assumptions, actual_monthly_spend=spend, today=today)[0]["months"]
+    b = run_projection(assumptions, actual_monthly_spend=spend, today=today, loan_timeline=inputs["loan_timeline"])[0]["months"]
+    assert [m["expense"] for m in a[:10]] == [m["expense"] for m in b[:10]]
+    assert [m["cash_end"] for m in a[:10]] == [m["cash_end"] for m in b[:10]]
+    assert b[10]["expense"] < a[10]["expense"]                                          # November onwards differs

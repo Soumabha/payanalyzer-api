@@ -6,6 +6,7 @@
 
 const SCHEDULE_PREVIEW_ROWS = 24;
 const expandedSchedules = new Set();   // loan ids whose full schedule is open
+const expandedLoans = new Set();       // loan ids whose section is open (all start collapsed)
 let lastJournal = null;
 let lastLoans = null;                  // {loans: [view...], combined, legacy}
 
@@ -228,15 +229,21 @@ function combinedStrip(combined) {
 function loanBlock(view) {
     const id = view.loan.id;
     const s = view.summary;
+    const open = expandedLoans.has(id);
     const drifts = view.timeline.filter((row) => row.drift !== null && row.drift !== undefined && Math.abs(row.drift) >= 0.005);
+    const summary = `${lakhs(s.current_balance)} L left &middot; EMI ${lakhs(s.monthly_emi)} L a month &middot; clears ${escapeHtml(s.payoff_month || "never")}`;
+    const flag = drifts.length ? ` <span class="tag tag-approx" title="A statement balance differs from the computed schedule">statement differs</span>` : "";
     let html = `<div class="loan-block">
-        <div class="loan-header">
-            <h3><i class="fa-solid fa-landmark"></i> ${escapeHtml(view.loan.name)}</h3>
-            <div class="card-actions">
-                <button class="btn" data-action="prepayment" data-loan-id="${id}"><i class="fa-solid fa-bolt"></i> Add prepayment</button>
-                <button class="btn btn-secondary" data-action="terms" data-loan-id="${id}"><i class="fa-solid fa-percent"></i> Rate / EMI changed</button>
-                <button class="btn btn-secondary" data-action="statement" data-loan-id="${id}"><i class="fa-solid fa-file-invoice"></i> Update from statement</button>
-            </div>
+        <button type="button" class="loan-toggle${open ? " expanded" : ""}" data-action="toggle-loan" data-loan-id="${id}" aria-expanded="${open}">
+            <span class="chevron">&#9656;</span>
+            <span class="loan-title"><i class="fa-solid fa-landmark"></i> ${escapeHtml(view.loan.name)}</span>
+            <span class="loan-summary">${summary}${flag}</span>
+        </button>
+        <div class="loan-body${open ? "" : " hidden"}" id="loanBody${id}">
+        <div class="card-actions loan-body-actions">
+            <button class="btn" data-action="prepayment" data-loan-id="${id}"><i class="fa-solid fa-bolt"></i> Add prepayment</button>
+            <button class="btn btn-secondary" data-action="terms" data-loan-id="${id}"><i class="fa-solid fa-percent"></i> Rate / EMI changed</button>
+            <button class="btn btn-secondary" data-action="statement" data-loan-id="${id}"><i class="fa-solid fa-file-invoice"></i> Update from statement</button>
         </div>
         <div class="stat-grid">
             <div class="stat"><div class="stat-label">Balance now</div><div class="stat-value">${lakhs(s.current_balance)} L</div></div>
@@ -268,7 +275,7 @@ function loanBlock(view) {
     if (view.schedule.length > SCHEDULE_PREVIEW_ROWS) {
         html += `<div class="card-actions" style="justify-content:flex-start;margin-top:8px"><button class="btn btn-secondary" data-action="toggle-schedule" data-loan-id="${id}">${expanded ? "Show fewer months" : `Show all ${view.schedule.length} months`}</button></div>`;
     }
-    return html + `</div>`;
+    return html + `</div></div>`;
 }
 
 function renderLoans(data) {
@@ -471,6 +478,15 @@ document.addEventListener("click", async (e) => {
             case "prepayment": openPrepayment(loanId); break;
             case "terms": openTermsChange(loanId); break;
             case "statement": openStatement(loanId); break;
+            case "toggle-loan": {
+                const key = Number(loanId);
+                const open = !expandedLoans.has(key);
+                if (open) expandedLoans.add(key); else expandedLoans.delete(key);
+                target.classList.toggle("expanded", open);
+                target.setAttribute("aria-expanded", String(open));
+                document.getElementById(`loanBody${key}`).classList.toggle("hidden", !open);
+                break;
+            }
             case "toggle-schedule": {
                 const key = Number(loanId);
                 if (expandedSchedules.has(key)) expandedSchedules.delete(key); else expandedSchedules.add(key);

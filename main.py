@@ -420,7 +420,10 @@ def get_fire_projection(
     journal_store=Depends(get_journal_store),
 ):
     assumptions = get_assumptions()
-    inputs = journal.projection_inputs(journal_store, start_year, end_year, include_actuals=actuals)
+    inputs = journal.projection_inputs(
+        journal_store, start_year, end_year, include_actuals=actuals,
+        legacy={"annual_emi_lakhs": assumptions["annual_emi_lakhs"], "loan_end_year": assumptions["loan_end_year"]},
+    )
     actual_monthly_spend = None
     if actuals:
         store = SqliteExpenseStore()

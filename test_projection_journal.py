@@ -76,8 +76,13 @@ def test_loan_balance_is_unknown_for_years_before_the_first_observation():
     )
     rows = by_year(run_projection(DEFAULT_ASSUMPTIONS, loan_timeline=timeline))
     assert rows[Y]["loan_balance_end"] is None
-    assert rows[Y]["emi_amount"] == pytest.approx(12 * EMI, abs=1e-3)  # assumed paid
+    # Nothing is attributed to a loan before it was entered (journal.projection_inputs
+    # fills those months with the old flat-EMI assumption instead).
+    assert rows[Y]["emi_amount"] == 0.0
     assert rows[Y]["loan_interest"] == 0.0
+    # the loan is entered in March of Y+1: its first month and the nine after it
+    assert rows[Y + 1]["emi_amount"] == pytest.approx(10 * EMI, abs=1e-3)
+    assert rows[Y + 2]["emi_amount"] == pytest.approx(12 * EMI, abs=1e-3)
 
 
 def test_actuals_blend_uses_each_months_own_loan_payment():

@@ -172,7 +172,8 @@ def test_timeline_marks_months_before_the_first_observation_as_estimated():
     timeline = build_timeline([obs(PRINCIPAL, "2026-03-31")], [terms()], [], 2026, 2026)
     by_month = {r["month"]: r for r in timeline}
     assert [by_month[m]["estimated"] for m in ("2026-01", "2026-02", "2026-03", "2026-04")] == [True, True, True, False]
-    assert by_month["2026-01"]["emi_paid"] == terms()["emi_lakhs"]
+    assert by_month["2026-01"]["emi_paid"] == 0.0                     # from before the loan was entered: nothing attributed
+    assert by_month["2026-03"]["emi_paid"] == terms()["emi_lakhs"]     # its own first month pays the scheduled EMI
     assert by_month["2026-01"]["closing"] is None
     assert by_month["2026-03"]["closing"] == PRINCIPAL
     assert by_month["2026-04"]["interest"] > 0
