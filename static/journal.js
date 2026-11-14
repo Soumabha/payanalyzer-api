@@ -144,13 +144,18 @@ function renderCheckIns(checkIns) {
         el.innerHTML = `<div class="hint-text"><i class="fa-solid fa-circle-info"></i> No check-ins yet.</div>`;
         return;
     }
-    const loans = loanViews().map((v) => v.loan);
     const cell = (entry, key) => `<td class="num">${entry.balances[key] === undefined ? "&ndash;" : lakhs(entry.balances[key])}</td>`;
-    const loanHeads = loans.map((l) => `<th class="num">${escapeHtml(l.name)} outstanding</th>`).join("");
-    let html = `<table><thead><tr><th>Date</th><th class="num">Cash</th><th class="num">Equity</th><th class="num">Debt</th>${loanHeads}<th>Note</th><th></th></tr></thead><tbody>`;
+    // Loans are summed into one figure here; the breakdown is on hover and in the edit form.
+    const loanCell = (entry) => {
+        const parts = loanViews().map((v) => ({ name: v.loan.name, value: entry.balances[`loan_${v.loan.id}`] })).filter((p) => p.value !== undefined);
+        if (!parts.length) return `<td class="num">&ndash;</td>`;
+        const total = parts.reduce((sum, p) => sum + p.value, 0);
+        const title = parts.length > 1 ? ` title="${escapeHtml(parts.map((p) => `${p.name}: ${Number(p.value).toFixed(2)}`).join("  +  "))}"` : "";
+        return `<td class="num"${title}>${lakhs(total)}</td>`;
+    };
+    let html = `<table><thead><tr><th>Date</th><th class="num">Cash</th><th class="num">Equity</th><th class="num">Debt</th><th class="num">Loan outstanding</th><th>Note</th><th></th></tr></thead><tbody>`;
     checkIns.forEach((entry) => {
-        const loanCells = loans.map((l) => cell(entry, `loan_${l.id}`)).join("");
-        html += `<tr><td>${escapeHtml(entry.as_of)}</td>${cell(entry, "cash")}${cell(entry, "equity")}${cell(entry, "debt")}${loanCells}<td>${escapeHtml(entry.note || "")}</td><td>${actionButtons("edit-checkin", "delete-checkin", escapeHtml(entry.as_of))}</td></tr>`;
+        html += `<tr><td>${escapeHtml(entry.as_of)}</td>${cell(entry, "cash")}${cell(entry, "equity")}${cell(entry, "debt")}${loanCell(entry)}<td>${escapeHtml(entry.note || "")}</td><td>${actionButtons("edit-checkin", "delete-checkin", escapeHtml(entry.as_of))}</td></tr>`;
     });
     el.innerHTML = html + "</tbody></table>";
 }

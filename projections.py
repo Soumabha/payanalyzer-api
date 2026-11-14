@@ -383,8 +383,10 @@ def run_projection(
                       it replaces the flat annual EMI: each year's EMI and
                       prepayments come from the schedule, rows gain
                       loan_interest / loan_principal / loan_prepayment /
-                      loan_balance_end, and prepayments are part of total
-                      expense (so they are deducted from cash).
+                      loan_balance_end (detail only: the table shows none of
+                      them). emi_amount is the year's EMI plus any prepayment,
+                      so prepayments are part of total expense and deducted
+                      from cash.
       observations  - check-ins: known cash/equity/debt balances ({bucket,
                       as_of, amount_lakhs}); actuals mode only. A check-in is
                       snapped to the START of its month: that month's start
@@ -510,9 +512,11 @@ def run_projection(
         # month-by-month amortization; otherwise the flat annual assumption.
         if loan_enabled:
             loan_year = summarize_loan_year(loan_timeline, year)
-            emi_amount = loan_year["emi"]
-            emi_active = emi_amount > 0
+            # EMI Amt is every loan payment of the year, a prepayment included,
+            # so the visible expense columns always add up to Total Exp.
             loan_prepayment = loan_year["prepayment"]
+            emi_amount = loan_year["emi"] + loan_prepayment
+            emi_active = emi_amount > 0
             loan_outflow_months = monthly_cash_outflow(loan_timeline, year)
         else:
             emi_active = year <= loan_end_year
@@ -521,7 +525,7 @@ def run_projection(
             loan_outflow_months = [emi_amount / 12] * 12
 
         # H - Total Expense
-        total_expense = base_expense + kids_expense + parents_expense + emi_amount + loan_prepayment
+        total_expense = base_expense + kids_expense + parents_expense + emi_amount
 
         # I - Rental Income
         if year == start_year:

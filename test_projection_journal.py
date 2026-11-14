@@ -65,6 +65,28 @@ def test_prepayment_is_deducted_from_cash_and_shortens_the_loan():
     assert with_prepay[Y + 1]["loan_interest"] < without[Y + 1]["loan_interest"]
 
 
+def test_the_visible_expense_columns_add_up_to_total_expense_even_with_prepayments():
+    """The table shows Base, Kids, Parents and EMI Amt but no separate prepayment
+    column, so EMI Amt must carry the prepayment or the row would not add up."""
+    prepay = [{"date": f"{Y}-06-15", "amount_lakhs": 5.0}, {"date": f"{Y + 2}-02-01", "amount_lakhs": 3.0}]
+    rows = by_year(run_projection(DEFAULT_ASSUMPTIONS, loan_timeline=loan_timeline(prepay)))
+    for year in (Y, Y + 1, Y + 2, 2040):
+        r = rows[year]
+        assert r["base_expense"] + r["kids_expense"] + r["parents_expense"] + r["emi_amount"] == pytest.approx(
+            r["total_expense"], abs=3e-4), year
+    assert rows[Y]["emi_amount"] == pytest.approx(rows[Y]["loan_interest"] + rows[Y]["loan_principal"] + 5.0, abs=1e-3)
+    assert rows[Y]["loan_prepayment"] == 5.0                    # still reported as detail
+
+
+def test_a_months_base_plus_emi_columns_add_up_to_its_expense_with_a_prepayment():
+    timeline = loan_timeline([{"date": f"{Y}-02-10", "amount_lakhs": 6.0}])
+    row = by_year(run_projection(DEFAULT_ASSUMPTIONS, actual_monthly_spend={f"{Y}-01": 1.0, f"{Y}-02": 1.0},
+                                 today=date(Y, 4, 10), loan_timeline=timeline))[Y]
+    february = row["months"][1]
+    assert february["spend"] + february["loan_payment"] == pytest.approx(february["expense"], abs=2e-4)
+    assert february["loan_payment"] == pytest.approx(EMI + 6.0, abs=1e-3)
+
+
 def test_without_a_loan_timeline_no_loan_keys_appear():
     assert all("loan_interest" not in r for r in run_projection(DEFAULT_ASSUMPTIONS))
 

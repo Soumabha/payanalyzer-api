@@ -57,14 +57,8 @@ const COLUMN_DEFS = [
     { key: "base_expense", label: "Base Exp.", group: "expense" },
     { key: "kids_expense", label: "Kids Exp.", group: "expense" },
     { key: "parents_expense", label: "Parents Exp.", group: "expense" },
-    { key: "emi_amount", label: "EMI Amt", group: "expense" },
+    { key: "emi_amount", label: "EMI Amt", group: "expense", hint: "All loan payments: the EMI plus any prepayment" },
     { key: "total_expense", label: "Total Exp.", group: "expense" },
-
-    // Present only once a loan is set up in the Journal (see renderProjectionTable).
-    { key: "loan_interest", label: "Loan Interest", group: "loan", optional: true },
-    { key: "loan_principal", label: "Loan Principal", group: "loan", optional: true },
-    { key: "loan_prepayment", label: "Prepaid", group: "loan", optional: true },
-    { key: "loan_balance_end", label: "Loan Balance", group: "loan", optional: true },
 
     { key: "rental_income", label: "Rental Inc.", group: "income" },
     { key: "salary", label: "Salary", group: "income" },
@@ -91,7 +85,6 @@ const COLUMN_DEFS = [
 
 const GROUP_LABELS = {
     expense: "Expense",
-    loan: "Loan",
     income: "Income",
     cashflow: "Cash Flow",
     equity: "Equity",
@@ -201,17 +194,12 @@ function monthCellValue(month, colKey) {
         case "equity_end": return month.equity_end;
         case "debt_end": return month.debt_end;
         case "total_portfolio": return month.total_portfolio;
-        case "loan_interest": return month.loan_interest;
-        case "loan_principal": return month.loan_principal;
-        case "loan_prepayment": return month.loan_prepayment;
-        case "loan_balance_end": return month.loan_balance_end;
         default: return undefined;
     }
 }
 
 // Variance of a check-in vs what the forecast expected, per column.
-// Higher than expected is green, lower is red; the loan balance is the
-// reverse (owing less is good).
+// Higher than expected is green, lower is red.
 function monthVariance(month, colKey) {
     const marks = month.checkin;
     if (!marks) return null;
@@ -222,7 +210,6 @@ function monthVariance(month, colKey) {
         case "total_portfolio":
             return month.checkin_total_variance === null || month.checkin_total_variance === undefined
                 ? null : { value: month.checkin_total_variance, goodWhenUp: true };
-        case "loan_balance_end": return marks.loan ? { value: marks.loan.variance, goodWhenUp: false } : null;
         default: return null;
     }
 }
@@ -280,13 +267,13 @@ function renderProjectionTable(rows, milestones) {
         const current = rows.find((row) => row.expense_source === "blended");
         expandedYears = new Set(current ? [current.year] : []);
     }
-    const columns = COLUMN_DEFS.filter((col) => !col.optional || rows.some((row) => row[col.key] !== undefined));
+    const columns = COLUMN_DEFS;
     let html = "<table><thead>";
     html += buildGroupHeaderRow(columns);
     html += "<tr>";
     columns.forEach((col) => {
         const groupClass = col.group ? `col-group-${col.group}` : "";
-        html += `<th class="${groupClass}">${col.label}</th>`;
+        html += `<th class="${groupClass}"${col.hint ? ` title="${escapeHtml(col.hint)}"` : ""}>${col.label}</th>`;
     });
     html += "</tr></thead><tbody>";
     rows.forEach((row) => {

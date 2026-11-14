@@ -213,3 +213,11 @@ def test_every_css_class_the_pages_use_is_defined_in_the_stylesheet():
     assert {"btn", "modal", "icon-btn", "card-header", "var-chip", "status-legend"} <= used, "parser lost track of classes"
     missing = used - _classes_defined() - HOOK_ONLY_CLASSES
     assert missing == set(), f"classes used by the pages but not styled: {sorted(missing)}"
+
+
+def test_the_projection_table_has_no_loan_detail_columns():
+    """The loan interest/principal/balance live on the Journal page; the projection
+    table keeps its original columns so it stays easy to match to the spreadsheet."""
+    keys = re.findall(r'\{\s*key:\s*"(\w+)"', _js_block("COLUMN_DEFS"))
+    assert keys and not [k for k in keys if k.startswith("loan_")]
+    assert 'group: "loan"' not in PROJECTION_JS

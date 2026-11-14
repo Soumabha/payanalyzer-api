@@ -769,7 +769,6 @@ td i {
 .var-chip.var-flat { background: rgba(255, 255, 255, 0.08); color: var(--text-muted); }
 
 /* --- Projection: loan columns, check-in badge --- */
-.dense-table .col-group-loan { background: rgba(255, 99, 132, 0.09); }
 .dense-table .source-badge.source-checkin { background: rgba(255, 206, 86, 0.2); color: #ffce56; }
 
 /* --- Journal page --- */
