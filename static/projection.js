@@ -311,6 +311,27 @@ function renderProjectionTable(rows, milestones) {
     });
 }
 
+// Draws a vertical guide through the hovered year so every line's value at that
+// year can be read (and compared) at once.
+const verticalGuidePlugin = {
+    id: "verticalGuide",
+    afterDatasetsDraw(chart) {
+        const active = chart.getActiveElements();
+        if (!active.length) return;
+        const { ctx, chartArea } = chart;
+        const x = active[0].element.x;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.lineWidth = 1;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.45)";
+        ctx.stroke();
+        ctx.restore();
+    },
+};
+
 function renderPortfolioChart(rows, planRows) {
     const canvas = document.getElementById("portfolioChart");
     const ctx = canvas.getContext("2d");
@@ -321,6 +342,7 @@ function renderPortfolioChart(rows, planRows) {
     if (portfolioChartInstance) portfolioChartInstance.destroy();
     portfolioChartInstance = new Chart(ctx, {
         type: "line",
+        plugins: [verticalGuidePlugin],
         data: {
             labels: rows.map((r) => r.year),
             datasets: [
@@ -334,6 +356,9 @@ function renderPortfolioChart(rows, planRows) {
                     fill: false,
                     tension: 0.3,
                     pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHoverBorderWidth: 2,
+                    pointHoverBorderColor: "#ffffff",
                 },
                 {
                     label: "Total Portfolio (actual + forecast)",
@@ -344,6 +369,9 @@ function renderPortfolioChart(rows, planRows) {
                     fill: true,
                     tension: 0.3,
                     pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHoverBorderWidth: 2,
+                    pointHoverBorderColor: "#ffffff",
                 },
                 {
                     label: "Equity",
@@ -355,6 +383,9 @@ function renderPortfolioChart(rows, planRows) {
                     fill: false,
                     tension: 0.3,
                     pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHoverBorderWidth: 2,
+                    pointHoverBorderColor: "#ffffff",
                 },
                 {
                     label: "Debt",
@@ -366,6 +397,9 @@ function renderPortfolioChart(rows, planRows) {
                     fill: false,
                     tension: 0.3,
                     pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHoverBorderWidth: 2,
+                    pointHoverBorderColor: "#ffffff",
                 },
                 {
                     label: "Cash",
@@ -377,12 +411,17 @@ function renderPortfolioChart(rows, planRows) {
                     fill: false,
                     tension: 0.3,
                     pointRadius: 0,
+                    pointHoverRadius: 5,
+                    pointHoverBorderWidth: 2,
+                    pointHoverBorderColor: "#ffffff",
                 },
             ],
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            // Hover anywhere: pick the nearest year and highlight every line's point on it.
+            interaction: { mode: "index", intersect: false, axis: "x" },
             plugins: {
                 legend: {
                     display: true,
@@ -391,8 +430,16 @@ function renderPortfolioChart(rows, planRows) {
                 tooltip: {
                     backgroundColor: "#1a1d2d",
                     padding: 10,
+                    usePointStyle: true,
                     callbacks: {
-                        label: (ctx) => `${ctx.dataset.label}: ₹${ctx.parsed.y.toLocaleString(undefined, { minimumFractionDigits: 2 })} L`,
+                        title: (items) => `Year ${items[0].label}`,
+                        label: (ctx) => `${ctx.dataset.label}: ₹${ctx.parsed.y.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} L`,
+                        // Keep each line's own colour on its marker so the values are easy to tell apart.
+                        labelColor: (ctx) => ({
+                            borderColor: ctx.dataset.borderColor,
+                            backgroundColor: ctx.dataset.borderColor,
+                            borderWidth: 2,
+                        }),
                     },
                 },
             },
