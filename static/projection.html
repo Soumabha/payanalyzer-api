@@ -40,13 +40,13 @@
                 <section id="projection-table-section">
                     <h2><i class="fa-solid fa-table"></i> Year-by-Year Projection</h2>
                     <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Highlighted rows mark years your key assumptions change (kids/parents expense start, retirement, loan end) — use them to cross-check against your spreadsheet.</div>
-                    <div class="status-legend">
-                        <span><span class="swatch" style="background:#00d2d3"></span>Actual month (recorded spend in Base Exp. + the loan payment in EMI Amt)</span>
-                        <span><span class="swatch" style="background:#a99cff"></span>In progress (forecast used until it closes)</span>
-                        <span><span class="swatch" style="background:#a0a5b8"></span>Forecast</span>
-                        <span><span class="swatch" style="background:#ff9f40"></span>No data: closed month with no expenses, forecast used - sync or import it</span>
+                    <div class="status-legend" aria-label="Month status legend">
+                        <span class="legend-item" title="Closed month with recorded expenses: recorded spend in Base Exp. plus the loan payment in EMI Amt."><span class="swatch swatch-actual"></span>Actual</span>
+                        <span class="legend-item" title="The current month: the forecast is used until the month closes."><span class="swatch swatch-in-progress"></span>In progress</span>
+                        <span class="legend-item" title="A month still to come."><span class="swatch swatch-forecast"></span>Forecast</span>
+                        <span class="legend-item" title="A closed month with no recorded expenses, so the forecast is used. Sync or import that month."><span class="swatch swatch-no-data"></span>No data</span>
                     </div>
-                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Click a year with a badge to expand its months. Income is always the assumed figure; only expenses use recorded actuals.</div>
+                    <p class="legend-note">Click a year to expand its months. Income is always the assumed figure; only expenses use recorded actuals. Hover a legend item for details.</p>
                     <div id="projectionTable" class="table-container"></div>
                 </section>
             </div>

@@ -205,9 +205,9 @@ def root():
 @app.get("/api/stats")
 def get_stats():
     conn = get_db_connection()
-    cur = conn.execute("SELECT COUNT(*) as count, SUM(cost) as total FROM expenses")
+    cur = conn.execute("SELECT COUNT(*) as count, SUM(cost) as total FROM expenses WHERE deleted_at IS NULL")
     row = cur.fetchone()
-    cur2 = conn.execute("SELECT MIN(date) as min_date, MAX(date) as max_date FROM expenses")
+    cur2 = conn.execute("SELECT MIN(date) as min_date, MAX(date) as max_date FROM expenses WHERE deleted_at IS NULL")
     row2 = cur2.fetchone()
     conn.close()
     total_spent = row["total"] or 0
@@ -254,7 +254,7 @@ def get_monthly(start: str = Query(None), end: str = Query(None), category: str 
 def get_prediction():
     # Use linear regression on monthly totals to predict next 6 months
     conn = get_db_connection()
-    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses GROUP BY month ORDER BY month ASC")
+    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses WHERE deleted_at IS NULL GROUP BY month ORDER BY month ASC")
     rows = cur.fetchall()
     if not rows or len(rows) < 2:
         return {"prediction": []}
@@ -297,7 +297,7 @@ def get_category_totals(start: str = Query(None), end: str = Query(None), catego
 @app.get("/api/monthly-trend")
 def get_monthly_trend():
     conn = get_db_connection()
-    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses GROUP BY month ORDER BY month ASC")
+    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses WHERE deleted_at IS NULL GROUP BY month ORDER BY month ASC")
     data = [{"month": row["month"], "total": row["total"]} for row in cur.fetchall()]
     conn.close()
     return data
