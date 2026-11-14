@@ -753,7 +753,6 @@ td i {
 }
 
 /* --- Projection: check-in variance --- */
-.dense-table .col-group-checkin { background: rgba(255, 206, 86, 0.08); }
 .dense-table tr.month-row.month-checkin td:first-child { box-shadow: inset 3px 0 0 #ffce56; }
 .var-chip {
     display: inline-block;
@@ -768,5 +767,3 @@ td i {
 .var-chip.var-good { background: rgba(46, 213, 115, 0.2); color: #2ed573; }
 .var-chip.var-bad { background: rgba(255, 71, 87, 0.2); color: #ff4757; }
 .var-chip.var-flat { background: rgba(255, 255, 255, 0.08); color: var(--text-muted); }
-.adj-up { color: #2ed573; font-weight: 600; }
-.adj-down { color: #ff4757; font-weight: 600; }
