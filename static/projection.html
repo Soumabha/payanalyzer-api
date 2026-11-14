@@ -19,6 +19,7 @@
             <nav class="page-nav">
                 <a href="/" class="nav-link"><i class="fa-solid fa-chart-pie"></i> Expenses</a>
                 <a href="/projection" class="nav-link active"><i class="fa-solid fa-seedling"></i> Wealth Projection</a>
+                <a href="/journal" class="nav-link"><i class="fa-solid fa-book"></i> Journal</a>
             </nav>
         </div>
     </header>
@@ -39,6 +40,13 @@
                 <section id="projection-table-section">
                     <h2><i class="fa-solid fa-table"></i> Year-by-Year Projection</h2>
                     <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Highlighted rows mark years your key assumptions change (kids/parents expense start, retirement, loan end) — use them to cross-check against your spreadsheet.</div>
+                    <div class="status-legend" aria-label="Month status legend">
+                        <span class="legend-item" title="Closed month with recorded expenses: recorded spend in Base Exp. plus the loan payment in EMI Amt."><span class="swatch swatch-actual"></span>Actual</span>
+                        <span class="legend-item" title="The current month: the forecast is used until the month closes."><span class="swatch swatch-in-progress"></span>In progress</span>
+                        <span class="legend-item" title="A month still to come."><span class="swatch swatch-forecast"></span>Forecast</span>
+                        <span class="legend-item" title="A closed month with no recorded expenses, so the forecast is used. Sync or import that month."><span class="swatch swatch-no-data"></span>No data</span>
+                    </div>
+                    <p class="legend-note">Click a year to expand its months. Income is always the assumed figure; only expenses use recorded actuals. Hover a legend item for details.</p>
                     <div id="projectionTable" class="table-container"></div>
                 </section>
             </div>
@@ -47,18 +55,18 @@
     </div>
 
     <!-- Floating trigger for the assumptions drawer -->
-    <button id="openDrawerBtn" class="fab-btn" title="Edit Assumptions & Extra Income">
+    <button id="openDrawerBtn" class="fab-btn" title="Edit Assumptions">
         <i class="fa-solid fa-sliders"></i>
     </button>
 
-    <!-- Right-hand drawer: Assumptions + Extra Income -->
+    <!-- Right-hand drawer: Assumptions -->
     <div id="drawerOverlay" class="drawer-overlay"></div>
     <aside id="assumptionsDrawer" class="drawer">
         <div class="drawer-header">
             <h2><i class="fa-solid fa-sliders"></i> Assumptions</h2>
             <button id="closeDrawerBtn" class="drawer-close-btn" title="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Edit any value and hit Save & Recompute — the chart and table update immediately.</div>
+        <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Edit any value and hit Save & Recompute — the chart and table update immediately. Loans (EMI, prepayments) are managed on the <a href="/journal">Journal</a> page.</div>
         <form id="assumptionsForm" class="assumptions-form">
 
             <fieldset>
@@ -98,22 +106,6 @@
                 <div class="form-field">
                     <label for="parents_expense_end_year">Parents Expense End Year</label>
                     <select id="parents_expense_end_year" name="parents_expense_end_year" required></select>
-                </div>
-            </fieldset>
-
-            <fieldset>
-                <legend>Loan</legend>
-                <div class="form-field">
-                    <label for="loan_outstanding_lakhs">Loan Outstanding (Lakhs)</label>
-                    <input type="number" step="0.01" id="loan_outstanding_lakhs" name="loan_outstanding_lakhs" required>
-                </div>
-                <div class="form-field">
-                    <label for="annual_emi_lakhs">Annual EMI Payment (Lakhs)</label>
-                    <input type="number" step="0.01" id="annual_emi_lakhs" name="annual_emi_lakhs" required>
-                </div>
-                <div class="form-field">
-                    <label for="loan_end_year">Loan End Year</label>
-                    <select id="loan_end_year" name="loan_end_year" required></select>
                 </div>
             </fieldset>
 
@@ -171,16 +163,6 @@
             </div>
         </form>
 
-        <hr class="drawer-divider">
-
-        <h2><i class="fa-solid fa-money-bill-wave"></i> Extra Income (Manual Entries)</h2>
-        <form id="extraIncomeForm" class="extra-income-form">
-            <select id="extraIncomeYear" required></select>
-            <input type="number" step="0.01" id="extraIncomeAmount" placeholder="Amount (Lakhs)" required>
-            <input type="text" id="extraIncomeNote" placeholder="Note (optional)">
-            <button type="submit"><i class="fa-solid fa-plus"></i> Add</button>
-        </form>
-        <div id="extraIncomeList" class="table-container"></div>
     </aside>
 
     <script src="/static/html-utils.js"></script>

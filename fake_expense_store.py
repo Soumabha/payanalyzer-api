@@ -106,6 +106,13 @@ class InMemoryExpenseStore:
             for r in sorted(picked, key=lambda r: r["date"] or "")
         ]
 
+    def monthly_totals(self, since_date):
+        totals = {}
+        for r in self._rows.values():
+            if r["deleted_at"] is None and r["date"] is not None and r["date"] >= since_date:
+                totals[r["date"][:7]] = totals.get(r["date"][:7], 0.0) + r["cost"]
+        return [{"month": m, "total": totals[m]} for m in sorted(totals)]
+
     def upsert_api_row(self, row):
         self._rows[row["id"]] = {**row, "source": "api"}
 

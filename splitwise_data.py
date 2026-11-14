@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS expenses (
 );
 """
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+def get_db_connection(check_same_thread=True):
+    conn = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -179,6 +179,19 @@ class SqliteExpenseStore:
                 "SELECT id, date, description, cost, category FROM expenses "
                 "WHERE date >= ? AND date <= ? AND deleted_at IS NULL AND category IS NOT NULL ORDER BY date",
                 (start_date, end_date),
+            )
+        ]
+
+    def monthly_totals(self, since_date):
+        """Total cost per 'YYYY-MM' month, in the stored unit (rupees), over live
+        rows of every source and group dated on or after since_date."""
+        return [
+            dict(r)
+            for r in self._conn.execute(
+                "SELECT strftime('%Y-%m', date) AS month, SUM(cost) AS total FROM expenses "
+                "WHERE deleted_at IS NULL AND date IS NOT NULL AND date >= ? "
+                "GROUP BY month ORDER BY month",
+                (since_date,),
             )
         ]
 

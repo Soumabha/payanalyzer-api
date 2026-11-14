@@ -1,13 +1,22 @@
 """
-Persistence layer for the FIRE / wealth projection's assumptions and manual
-extra-income entries. Follows the same sqlite3 + row_factory pattern as
-splitwise_data.py.
+Persistence layer for the FIRE / wealth projection's assumptions. Follows the
+same sqlite3 + row_factory pattern as splitwise_data.py. Extra income lives in
+the journal ledger (see journal.py).
 """
 
+import logging
+import sqlite3
 from typing import Any
 
 from splitwise_data import get_db_connection
 from projections import ASSUMPTION_FIELDS, DEFAULT_ASSUMPTIONS, PROJECTION_START_YEAR
+
+logger = logging.getLogger("splitapi")
+
+# Columns of the old flat-EMI assumptions. Loans are modelled in the journal now,
+# so the projection no longer reads them and they are dropped from existing
+# databases at startup.
+RETIRED_ASSUMPTION_COLUMNS = ("loan_outstanding_lakhs", "annual_emi_lakhs", "loan_end_year")
 
 _ASSUMPTION_COLUMNS_SQL = ",\n    ".join(
     f"{field} REAL" if not field.endswith("_year") else f"{field} INTEGER"
@@ -19,14 +28,6 @@ CREATE TABLE IF NOT EXISTS projection_assumptions (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     {_ASSUMPTION_COLUMNS_SQL},
     updated_at TEXT
-);
-"""
-
-PROJECTION_EXTRA_INCOME_SCHEMA = """
-CREATE TABLE IF NOT EXISTS projection_extra_income (
-    year INTEGER PRIMARY KEY,
-    amount_lakhs REAL NOT NULL,
-    note TEXT
 );
 """
 
@@ -48,11 +49,26 @@ def _ensure_assumption_columns(conn) -> None:
             conn.execute(f"ALTER TABLE projection_assumptions ADD COLUMN {field} {col_type}")
 
 
+def columns_to_retire(existing_columns) -> list[str]:
+    """Which retired columns a table still has, in a stable order."""
+    return [column for column in RETIRED_ASSUMPTION_COLUMNS if column in set(existing_columns)]
+
+
+def _drop_retired_columns(conn) -> None:
+    existing = [row["name"] for row in conn.execute("PRAGMA table_info(projection_assumptions)").fetchall()]
+    for column in columns_to_retire(existing):
+        try:
+            conn.execute(f"ALTER TABLE projection_assumptions DROP COLUMN {column}")
+        except sqlite3.OperationalError as error:
+            # SQLite older than 3.35 can't drop columns. Harmless: nothing reads them.
+            logger.warning(f"Could not drop retired assumptions column {column}: {error}")
+
+
 def create_projection_schema():
     conn = get_db_connection()
     conn.execute(PROJECTION_ASSUMPTIONS_SCHEMA)
-    conn.execute(PROJECTION_EXTRA_INCOME_SCHEMA)
     _ensure_assumption_columns(conn)
+    _drop_retired_columns(conn)
     conn.commit()
     conn.close()
 
@@ -65,9 +81,10 @@ def get_assumptions() -> dict[str, Any]:
     conn.close()
     if row is None:
         return dict(DEFAULT_ASSUMPTIONS)
-    data = dict(row)
-    data.pop("id", None)
-    data.pop("updated_at", None)
+    # Only the current assumption fields: a column that is no longer one (or has
+    # not been dropped yet) never leaks into the projection or the API.
+    stored = dict(row)
+    data = {field: stored.get(field) for field in ASSUMPTION_FIELDS}
     # A row saved before a new assumption field existed will have that
     # column as NULL after the migration in _ensure_assumption_columns;
     # fall back to the default for anything missing so older saved rows
@@ -121,40 +138,3 @@ def save_assumptions(partial_data: dict[str, Any]) -> dict[str, Any]:
     conn.commit()
     conn.close()
     return current
-
-
-def get_extra_income() -> list[dict[str, Any]]:
-    conn = get_db_connection()
-    cur = conn.execute(
-        "SELECT year, amount_lakhs, note FROM projection_extra_income ORDER BY year ASC"
-    )
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
-
-
-def get_extra_income_by_year() -> dict[int, float]:
-    return {row["year"]: row["amount_lakhs"] for row in get_extra_income()}
-
-
-def add_extra_income(year: int, amount_lakhs: float, note: str | None = None) -> None:
-    conn = get_db_connection()
-    conn.execute(
-        """
-        INSERT INTO projection_extra_income (year, amount_lakhs, note)
-        VALUES (?, ?, ?)
-        ON CONFLICT(year) DO UPDATE SET
-            amount_lakhs=excluded.amount_lakhs,
-            note=excluded.note
-        """,
-        (year, amount_lakhs, note),
-    )
-    conn.commit()
-    conn.close()
-
-
-def delete_extra_income(year: int) -> None:
-    conn = get_db_connection()
-    conn.execute("DELETE FROM projection_extra_income WHERE year = ?", (year,))
-    conn.commit()
-    conn.close()

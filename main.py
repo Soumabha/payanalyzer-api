@@ -1,24 +1,19 @@
 import os
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from splitwise import Splitwise
 from splitwise.exception import SplitwiseBaseException
 from requests.exceptions import RequestException
 from dotenv import load_dotenv
-from splitwise_data import create_schema, upsert_expense, get_latest_expense_update, get_db_connection
+from splitwise_data import create_schema, upsert_expense, get_latest_expense_update, get_db_connection, SqliteExpenseStore
+from actual_spend import load_actual_monthly_spend
 from projections import run_projection, PROJECTION_START_YEAR, PROJECTION_END_YEAR
-from projection_data import (
-    create_projection_schema,
-    get_assumptions,
-    save_assumptions,
-    get_extra_income,
-    get_extra_income_by_year,
-    add_extra_income,
-    delete_extra_income,
-)
+from projection_data import create_projection_schema, get_assumptions, save_assumptions
+import journal
+from journal_data import SqliteJournalStore, create_journal_schema
 from datetime import datetime, timedelta
 from collections import defaultdict
 import calendar
@@ -57,9 +52,6 @@ class AssumptionsUpdate(BaseModel):
     kids_expense_end_year: Optional[int] = None
     parents_expense_start_year: Optional[int] = None
     parents_expense_end_year: Optional[int] = None
-    loan_outstanding_lakhs: Optional[float] = None
-    annual_emi_lakhs: Optional[float] = None
-    loan_end_year: Optional[int] = None
     rental_income_lakhs: Optional[float] = None
     rent_increase_pct: Optional[float] = None
     current_annual_salary_lakhs: Optional[float] = None
@@ -72,16 +64,100 @@ class AssumptionsUpdate(BaseModel):
     debt_return_pct: Optional[float] = None
 
 
-class ExtraIncomeEntry(BaseModel):
-    year: int
+class LoanSetup(BaseModel):
+    name: str = "Loan"
+    outstanding_lakhs: float
+    as_of: str
+    annual_rate_pct: float
+    emi_lakhs: Optional[float] = None
+    remaining_months: Optional[int] = None
+
+
+class LoanTermsChange(BaseModel):
+    effective_from: str
+    annual_rate_pct: float
+    emi_lakhs: float
+    note: Optional[str] = None
+    statement_balance_lakhs: Optional[float] = None
+
+
+class LoanTermsEdit(BaseModel):
+    effective_from: str
+    annual_rate_pct: float
+    emi_lakhs: float
+    note: Optional[str] = None
+
+
+class PrepaymentIn(BaseModel):
+    entry_date: str
     amount_lakhs: float
     note: Optional[str] = None
+
+
+class LoanStatement(BaseModel):
+    as_of: str
+    outstanding_lakhs: float
+    note: Optional[str] = None
+
+
+class CheckIn(BaseModel):
+    as_of: str
+    cash_lakhs: Optional[float] = None
+    equity_lakhs: Optional[float] = None
+    debt_lakhs: Optional[float] = None
+    loan_balances: Optional[dict[str, float]] = None      # {loan id: outstanding}
+    note: Optional[str] = None
+
+
+class CheckInEdit(CheckIn):
+    ids: dict[str, int]
+
+
+class CheckInVoid(BaseModel):
+    ids: dict[str, int]
+
+
+class EntryEdit(BaseModel):
+    entry_date: str
+    amount_lakhs: float
+    note: Optional[str] = None
+    status: Optional[str] = None
+    bucket: Optional[str] = None
+
+
+class IncomeIn(BaseModel):
+    entry_date: str
+    amount_lakhs: float
+    note: Optional[str] = None
+    status: str = "planned"
+
+
+class TransferIn(BaseModel):
+    kind: str
+    entry_date: str
+    amount_lakhs: float
+    bucket: str
+    note: Optional[str] = None
+
+
+class StatusIn(BaseModel):
+    status: str
 
 
 @app.on_event("startup")
 def startup_event():
     create_schema()
     create_projection_schema()
+    create_journal_schema()
+    store = SqliteJournalStore()
+    try:
+        if journal.retire_legacy_extra_income_table(store) == "kept":
+            logger.warning(
+                "The old projection_extra_income table still has rows, so it was not dropped. "
+                "Re-enter them in the Journal (Entries > Extra income), then restart."
+            )
+    finally:
+        store.close()
     sync_splitwise_expenses()
 
 
@@ -147,9 +223,9 @@ def root():
 @app.get("/api/stats")
 def get_stats():
     conn = get_db_connection()
-    cur = conn.execute("SELECT COUNT(*) as count, SUM(cost) as total FROM expenses")
+    cur = conn.execute("SELECT COUNT(*) as count, SUM(cost) as total FROM expenses WHERE deleted_at IS NULL")
     row = cur.fetchone()
-    cur2 = conn.execute("SELECT MIN(date) as min_date, MAX(date) as max_date FROM expenses")
+    cur2 = conn.execute("SELECT MIN(date) as min_date, MAX(date) as max_date FROM expenses WHERE deleted_at IS NULL")
     row2 = cur2.fetchone()
     conn.close()
     total_spent = row["total"] or 0
@@ -196,7 +272,7 @@ def get_monthly(start: str = Query(None), end: str = Query(None), category: str 
 def get_prediction():
     # Use linear regression on monthly totals to predict next 6 months
     conn = get_db_connection()
-    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses GROUP BY month ORDER BY month ASC")
+    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses WHERE deleted_at IS NULL GROUP BY month ORDER BY month ASC")
     rows = cur.fetchall()
     if not rows or len(rows) < 2:
         return {"prediction": []}
@@ -239,7 +315,7 @@ def get_category_totals(start: str = Query(None), end: str = Query(None), catego
 @app.get("/api/monthly-trend")
 def get_monthly_trend():
     conn = get_db_connection()
-    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses GROUP BY month ORDER BY month ASC")
+    cur = conn.execute("SELECT strftime('%Y-%m', date) as month, SUM(cost) as total FROM expenses WHERE deleted_at IS NULL GROUP BY month ORDER BY month ASC")
     data = [{"month": row["month"], "total": row["total"]} for row in cur.fetchall()]
     conn.close()
     return data
@@ -271,13 +347,37 @@ def get_categories():
     conn.close()
     return {"categories": categories}
 
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def get_journal_store():
+    store = SqliteJournalStore()
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+@app.exception_handler(journal.JournalError)
+def journal_error_handler(request: Request, exc: journal.JournalError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
 @app.get("/projection")
 def projection_page():
     return FileResponse("static/projection.html")
 
+
+@app.get("/journal")
+def journal_page():
+    return FileResponse("static/journal.html")
+
+
 @app.get("/api/fire-projection/assumptions")
 def get_fire_assumptions():
-    return {"assumptions": get_assumptions(), "extra_income": get_extra_income()}
+    return {"assumptions": get_assumptions()}
+
 
 @app.put("/api/fire-projection/assumptions")
 def update_fire_assumptions(payload: AssumptionsUpdate):
@@ -288,28 +388,146 @@ def update_fire_assumptions(payload: AssumptionsUpdate):
         raise HTTPException(status_code=400, detail=str(e))
     return {"assumptions": updated}
 
-@app.get("/api/fire-projection/extra-income")
-def list_extra_income():
-    return get_extra_income()
-
-@app.post("/api/fire-projection/extra-income")
-def create_extra_income(entry: ExtraIncomeEntry):
-    add_extra_income(entry.year, entry.amount_lakhs, entry.note)
-    return get_extra_income()
-
-@app.delete("/api/fire-projection/extra-income/{year}")
-def remove_extra_income(year: int):
-    delete_extra_income(year)
-    return get_extra_income()
 
 @app.get("/api/fire-projection")
-def get_fire_projection(start_year: int = Query(PROJECTION_START_YEAR), end_year: int = Query(PROJECTION_END_YEAR)):
+def get_fire_projection(
+    start_year: int = Query(PROJECTION_START_YEAR),
+    end_year: int = Query(PROJECTION_END_YEAR),
+    actuals: bool = Query(False),
+    journal_store=Depends(get_journal_store),
+):
     assumptions = get_assumptions()
-    extra_income = get_extra_income_by_year()
+    inputs = journal.projection_inputs(journal_store, start_year, end_year, include_actuals=actuals)
+    actual_monthly_spend = None
+    if actuals:
+        store = SqliteExpenseStore()
+        try:
+            actual_monthly_spend = load_actual_monthly_spend(store, start_year)
+        finally:
+            store.close()
     try:
-        return run_projection(assumptions, extra_income, start_year=start_year, end_year=end_year)
+        return run_projection(
+            assumptions, inputs["extra_income_by_year"], start_year=start_year, end_year=end_year,
+            actual_monthly_spend=actual_monthly_spend,
+            loan_timeline=inputs["loan_timeline"],
+            observations=inputs["observations"],
+            transfers=inputs["transfers"],
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# --- Journal: loan, check-ins, income, transfers ---------------------------
+
+@app.get("/api/loans")
+def get_loans_view(store=Depends(get_journal_store)):
+    return journal.loan_views(store, datetime.now().date(), PROJECTION_START_YEAR, PROJECTION_END_YEAR)
+
+
+@app.post("/api/loans")
+def create_loan(payload: LoanSetup, store=Depends(get_journal_store)):
+    journal.setup_loan(store, _now(), **payload.dict())
+    return get_loans_view(store)
+
+
+@app.post("/api/loans/{loan_id}/terms")
+def create_loan_terms(loan_id: int, payload: LoanTermsChange, store=Depends(get_journal_store)):
+    journal.add_loan_terms(store, _now(), loan_id=loan_id, **payload.dict())
+    return get_loans_view(store)
+
+
+@app.delete("/api/loans/{loan_id}")
+def delete_loan(loan_id: int, store=Depends(get_journal_store)):
+    journal.delete_loan(store, _now(), loan_id)
+    return get_loans_view(store)
+
+
+@app.put("/api/loan-terms/{terms_id}")
+def update_loan_terms(terms_id: int, payload: LoanTermsEdit, store=Depends(get_journal_store)):
+    journal.edit_loan_terms(store, _now(), terms_id, **payload.dict())
+    return get_loans_view(store)
+
+
+@app.post("/api/loan-terms/{terms_id}/void")
+def void_loan_terms(terms_id: int, store=Depends(get_journal_store)):
+    journal.void_loan_terms(store, _now(), terms_id)
+    return get_loans_view(store)
+
+
+@app.post("/api/loans/{loan_id}/prepayments")
+def create_prepayment(loan_id: int, payload: PrepaymentIn, store=Depends(get_journal_store)):
+    journal.add_prepayment(store, _now(), loan_id=loan_id, **payload.dict())
+    return get_loans_view(store)
+
+
+@app.post("/api/loans/{loan_id}/prepayment-preview")
+def preview_prepayment(loan_id: int, payload: PrepaymentIn, store=Depends(get_journal_store)):
+    return journal.prepayment_preview(
+        store, loan_id=loan_id, entry_date=payload.entry_date, amount_lakhs=payload.amount_lakhs
+    )
+
+
+@app.post("/api/loans/{loan_id}/statement")
+def create_loan_statement(loan_id: int, payload: LoanStatement, store=Depends(get_journal_store)):
+    journal.add_loan_statement(store, _now(), loan_id=loan_id, **payload.dict())
+    return get_loans_view(store)
+
+
+@app.get("/api/journal")
+def get_journal(store=Depends(get_journal_store)):
+    return {
+        "entries": journal.journal_entries(store, datetime.now().date()),
+        "check_ins": journal.check_in_history(store),
+    }
+
+
+@app.post("/api/journal/check-in")
+def create_check_in(payload: CheckIn, store=Depends(get_journal_store)):
+    journal.record_check_in(store, _now(), **payload.dict())
+    return get_journal(store)
+
+
+@app.post("/api/journal/income")
+def create_income(payload: IncomeIn, store=Depends(get_journal_store)):
+    journal.add_income(store, _now(), **payload.dict())
+    return get_journal(store)
+
+
+@app.post("/api/journal/transfer")
+def create_transfer(payload: TransferIn, store=Depends(get_journal_store)):
+    journal.add_transfer(store, _now(), **payload.dict())
+    return get_journal(store)
+
+
+@app.post("/api/journal/entries/{entry_id}/status")
+def set_income_status(entry_id: int, payload: StatusIn, store=Depends(get_journal_store)):
+    journal.confirm_income(store, entry_id, payload.status)
+    return get_journal(store)
+
+
+@app.post("/api/journal/entries/{entry_id}/void")
+def void_journal_entry(entry_id: int, store=Depends(get_journal_store)):
+    journal.void_entry(store, _now(), entry_id)
+    return get_journal(store)
+
+
+@app.put("/api/journal/check-in")
+def update_check_in(payload: CheckInEdit, store=Depends(get_journal_store)):
+    journal.edit_check_in(store, _now(), **payload.dict())
+    return get_journal(store)
+
+
+@app.post("/api/journal/check-in/void")
+def void_check_in(payload: CheckInVoid, store=Depends(get_journal_store)):
+    journal.void_check_in(store, _now(), payload.ids)
+    return get_journal(store)
+
+
+@app.put("/api/journal/entries/{entry_id}")
+def update_journal_entry(entry_id: int, payload: EntryEdit, store=Depends(get_journal_store)):
+    journal.edit_entry(store, _now(), entry_id, **payload.dict())
+    return get_journal(store)
+
 
 @app.get("/api/top-recurring-expenses")
 def get_top_recurring_expenses(

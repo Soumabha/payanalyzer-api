@@ -8,14 +8,6 @@ document.addEventListener("DOMContentLoaded", function () {
     let allMonths = [];
     let selectedCategory = '';
 
-    // Initialize fetching base stats to show group name
-    fetch("/api/stats").then(r => r.json()).then(data => {
-        if (data.group_name) {
-            const groupName = document.getElementById('groupName');
-            if (groupName) groupName.innerHTML = `<i class="fa-solid fa-chart-pie"></i> ${escapeHtml(data.group_name)}`;
-        }
-    });
-
     // Populate year and month dropdowns
     const years = [2022, 2023, 2024, 2025, 2026, 2027];
     const monthsList = [
