@@ -6,8 +6,11 @@ No database, no FastAPI, no clock. Amounts are in lakhs, months are 'YYYY-MM'
 strings, rates are annual percentages.
 
 Conventions (kept deliberately simple, and relied on by the tests):
-  * An observed balance is "the balance after that month's EMI and any
-    prepayment that month": the schedule continues from the NEXT month.
+  * An observed balance is the balance on its date, after that month's EMI:
+    the schedule continues from the NEXT month. A prepayment dated BEFORE the
+    observation date is already inside the observed balance; one dated on or
+    after it (same day included) was made after the balance was taken, so it
+    is deducted from the observed balance before the schedule continues.
   * Each month: interest = opening balance * annual_rate / 12;
     principal = EMI - interest. Anything paid beyond the interest is
     principal, so paying more than the EMI automatically shortens the tenure
@@ -136,14 +139,22 @@ def amortize(
     return rows
 
 
-def _observations_by_month(observations: list[dict]) -> list[tuple[str, float]]:
-    """(month, balance) pairs in month order; if a month has several, the
+def _observations_by_month(observations: list[dict]) -> list[tuple[str, float, str]]:
+    """(month, balance, as_of date) in month order; if a month has several, the
     latest-dated one wins (ties: the later in the given list)."""
-    ordered = sorted(enumerate(observations), key=lambda pair: (pair[1]["as_of"], pair[0]))
-    latest: dict[str, float] = {}
+    ordered = sorted(enumerate(observations), key=lambda pair: (pair[1]["as_of"][:10], pair[0]))
+    latest: dict[str, tuple[float, str]] = {}
     for _, observation in ordered:
-        latest[observation["as_of"][:7]] = observation["amount_lakhs"]
-    return sorted(latest.items())
+        latest[observation["as_of"][:7]] = (observation["amount_lakhs"], observation["as_of"][:10])
+    return [(month, balance, as_of) for month, (balance, as_of) in sorted(latest.items())]
+
+
+def _prepaid_after_observation(prepayments: list[dict], month: str, as_of: str) -> float:
+    """Prepayments in the observation's month dated on/after its date: made
+    after the balance was taken, so not yet in it."""
+    return sum(
+        p["amount_lakhs"] for p in prepayments if p["date"][:7] == month and p["date"][:10] >= as_of
+    )
 
 
 def build_timeline(
@@ -159,8 +170,10 @@ def build_timeline(
     Months before the first observation have no known balance: their EMI is
     assumed paid at the terms' EMI with no interest/principal split, and they
     are marked `estimated` (closing None, except in the observation's own
-    month, where the balance is the observed one). From each observation on,
-    the schedule is computed forward until the next observation re-bases it.
+    month, where the balance is the observed one less any prepayment made
+    after it). From each observation on, the schedule is computed forward
+    until the next observation re-bases it; `drift` on that row is what the
+    schedule computed minus what was observed.
     """
     if not observations:
         return []
@@ -169,9 +182,8 @@ def build_timeline(
     window_start, window_end = f"{start_year}-01", f"{end_year}-12"
 
     rows: dict[str, dict] = {}
-    first_month, first_balance = anchors[0]
-    # Seed the window from its first month up to and including the first
-    # observed month with estimated rows.
+    first_month, first_balance, first_date = anchors[0]
+    first_late = _prepaid_after_observation(prepayments, first_month, first_date)
     first_index = min(month_index(window_start), month_index(first_month))
     for index in range(first_index, month_index(first_month) + 1):
         year_month = month_str(index)
@@ -186,16 +198,19 @@ def build_timeline(
             "rebased": False,
             "drift": None,
         }
-    rows[first_month]["closing"] = round(first_balance, 4)
+    rows[first_month]["closing"] = round(max(0.0, first_balance - first_late), 4)
     rows[first_month]["rebased"] = True
 
-    for position, (month, balance) in enumerate(anchors):
-        next_month = anchors[position + 1][0] if position + 1 < len(anchors) else None
-        segment = amortize(balance, month, terms, prepayments, end_month=next_month or window_end)
+    for position, (month, balance, as_of) in enumerate(anchors):
+        late = _prepaid_after_observation(prepayments, month, as_of)
+        next_anchor = anchors[position + 1] if position + 1 < len(anchors) else None
+        end_month = next_anchor[0] if next_anchor else window_end
+        segment = amortize(max(0.0, balance - late), month, terms, prepayments, end_month=end_month)
         for row in segment:
             rows[row["month"]] = row
-        if next_month is not None:
-            next_balance = anchors[position + 1][1]
+        if next_anchor is not None:
+            next_month, next_balance, next_date = next_anchor
+            next_late = _prepaid_after_observation(prepayments, next_month, next_date)
             landed = rows.get(next_month)
             if landed is None:
                 # The schedule had already cleared before the next observation.
@@ -205,8 +220,10 @@ def build_timeline(
                     "closing": 0.0, "estimated": True, "rebased": False, "drift": None,
                 }
                 rows[next_month] = landed
-            landed["drift"] = round(landed["closing"] - next_balance, 4)
-            landed["closing"] = round(next_balance, 4)
+            # The computed month already includes this month's late prepayments;
+            # the observation does not, so compare like with like.
+            landed["drift"] = round(landed["closing"] + next_late - next_balance, 4)
+            landed["closing"] = round(max(0.0, next_balance - next_late), 4)
             landed["rebased"] = True
 
     return [row for month, row in sorted(rows.items()) if window_start <= month <= window_end]
@@ -236,25 +253,26 @@ def monthly_cash_outflow(timeline: list[dict], year: int) -> list[float]:
 
 def forward_schedule(observations: list[dict], terms: list[dict], prepayments: list[dict]) -> list[dict]:
     """The remaining schedule from the latest observation until payoff."""
-    anchors = _observations_by_month(observations)
-    month, balance = anchors[-1]
-    return amortize(balance, month, terms, prepayments)
+    month, balance, as_of = _observations_by_month(observations)[-1]
+    late = _prepaid_after_observation(prepayments, month, as_of)
+    return amortize(max(0.0, balance - late), month, terms, prepayments)
 
 
 def summarize_schedule(observations: list[dict], terms: list[dict], prepayments: list[dict], today_month: str) -> dict:
     """Headline numbers for the loan page, from the latest observation on."""
-    month, balance = _observations_by_month(observations)[-1]
+    month, balance, as_of = _observations_by_month(observations)[-1]
+    late = _prepaid_after_observation(prepayments, month, as_of)
     schedule = forward_schedule(observations, terms, prepayments)
     paid_off = bool(schedule) and schedule[-1]["closing"] == 0.0
     elapsed = [row for row in schedule if row["month"] <= today_month]
     return {
         "balance_as_of": month,
         "balance_observed": round(balance, 4),
-        "current_balance": round(elapsed[-1]["closing"] if elapsed else balance, 4),
+        "current_balance": round(elapsed[-1]["closing"] if elapsed else max(0.0, balance - late), 4),
         "months_remaining": len([row for row in schedule if row["month"] > today_month]) if paid_off else None,
         "payoff_month": schedule[-1]["month"] if paid_off else None,
         "total_interest_remaining": round(sum(row["interest"] for row in schedule), 4),
-        "total_prepaid_remaining": round(sum(row["prepayment"] for row in schedule), 4),
+        "total_prepaid_remaining": round(sum(row["prepayment"] for row in schedule) + late, 4),
     }
 
 

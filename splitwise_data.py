@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS expenses (
 );
 """
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+def get_db_connection(check_same_thread=True):
+    conn = sqlite3.connect(DB_PATH, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     return conn
 

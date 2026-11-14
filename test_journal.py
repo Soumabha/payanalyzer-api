@@ -277,3 +277,24 @@ def test_plan_view_uses_loan_setup_and_terms_but_not_prepayments_or_check_ins():
     # the statement re-bases only the actual view
     assert {r["month"]: r for r in plan["loan_timeline"]}["2027-03"]["rebased"] is False
     assert {r["month"]: r for r in actual["loan_timeline"]}["2027-03"]["rebased"] is True
+
+
+# -- connection threading ---------------------------------------------------------
+
+
+def test_sql_journal_store_opens_a_connection_that_can_cross_worker_threads(monkeypatch):
+    """Regression: FastAPI creates a `yield` dependency's value in one worker
+    thread and runs the endpoint in another, so the connection must be opened
+    with check_same_thread=False. (No connection is opened: the opener is
+    replaced by a recorder.)"""
+    import journal_data
+
+    seen = {}
+
+    def fake_open(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(journal_data, "get_db_connection", fake_open)
+    journal_data.SqliteJournalStore()
+    assert seen == {"check_same_thread": False}

@@ -255,3 +255,62 @@ def test_schedule_summary_reports_balance_payoff_and_remaining_interest():
     assert summary["months_remaining"] == len([r for r in schedule if r["month"] > "2026-06"])
     assert summary["current_balance"] == [r for r in schedule if r["month"] == "2026-06"][0]["closing"]
     assert summary["total_interest_remaining"] == pytest.approx(sum(r["interest"] for r in schedule), abs=1e-3)
+
+
+# -- prepayments around an observation's own date -------------------------------------
+# Regression: a prepayment made the same day the balance was recorded (the
+# natural thing to do right after setting a loan up) used to be ignored.
+
+
+def test_a_prepayment_on_the_observation_date_is_deducted_from_the_observed_balance():
+    observations = [obs(PRINCIPAL, "2026-11-14")]
+    prepay = [{"date": "2026-11-14", "amount_lakhs": 5.0}]
+    plain = forward_schedule(observations, [terms()], [])
+    paid = forward_schedule(observations, [terms()], prepay)
+    assert len(paid) < len(plain)
+    assert paid[0]["opening"] == pytest.approx(PRINCIPAL - 5.0, abs=1e-4)
+    assert paid[0]["interest"] == pytest.approx((PRINCIPAL - 5.0) * RATE / 1200, abs=1e-4)
+
+
+def test_a_prepayment_earlier_in_the_month_than_the_observation_is_already_in_the_balance():
+    observations = [obs(PRINCIPAL, "2026-11-14")]
+    plain = forward_schedule(observations, [terms()], [])
+    earlier = forward_schedule(observations, [terms()], [{"date": "2026-11-05", "amount_lakhs": 5.0}])
+    assert earlier == plain
+
+
+def test_a_prepayment_after_the_observation_date_in_a_later_month_is_unchanged():
+    observations = [obs(PRINCIPAL, "2026-11-14")]
+    schedule = forward_schedule(observations, [terms()], [{"date": "2027-01-10", "amount_lakhs": 5.0}])
+    assert {r["month"]: r for r in schedule}["2027-01"]["prepayment"] == 5.0
+
+
+def test_preview_and_summary_see_a_same_day_prepayment():
+    observations = [obs(PRINCIPAL, "2026-11-14")]
+    preview = preview_prepayment(observations, [terms()], [], {"date": "2026-11-14", "amount_lakhs": 5.0})
+    assert preview["months_saved"] > 0 and preview["interest_saved"] > 0
+    summary = summarize_schedule(observations, [terms()], [{"date": "2026-11-14", "amount_lakhs": 5.0}], "2026-11")
+    assert summary["current_balance"] == pytest.approx(PRINCIPAL - 5.0, abs=1e-4)
+    assert summary["total_prepaid_remaining"] == 5.0
+
+
+def test_timeline_month_of_the_observation_shows_the_balance_after_a_same_day_prepayment():
+    timeline = build_timeline(
+        [obs(PRINCIPAL, "2026-11-14")], [terms()], [{"date": "2026-11-14", "amount_lakhs": 5.0}], 2026, 2027
+    )
+    november = {r["month"]: r for r in timeline}["2026-11"]
+    assert november["closing"] == pytest.approx(PRINCIPAL - 5.0, abs=1e-4)
+    assert november["prepayment"] == 5.0  # still a cash outflow that month
+
+
+def test_drift_compares_like_with_like_when_the_next_statement_month_has_a_late_prepayment():
+    schedule = amortize(PRINCIPAL, "2026-01", [terms()], [])
+    computed = {r["month"]: r["closing"] for r in schedule}["2026-07"]
+    prepay = [{"date": "2026-07-20", "amount_lakhs": 2.0}]
+    # Statement taken 1 July: it does not yet include the 20 July prepayment.
+    timeline = build_timeline(
+        [obs(PRINCIPAL, "2026-01-31"), obs(computed, "2026-07-01")], [terms()], prepay, 2026, 2026
+    )
+    july = {r["month"]: r for r in timeline}["2026-07"]
+    assert july["drift"] == pytest.approx(0.0, abs=1e-3)
+    assert july["closing"] == pytest.approx(computed - 2.0, abs=1e-3)

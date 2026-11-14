@@ -90,7 +90,12 @@ def _entry(row):
 
 class SqliteJournalStore:
     def __init__(self, conn=None):
-        self._conn = conn if conn is not None else get_db_connection()
+        # check_same_thread=False: FastAPI opens a `yield` dependency's value in
+        # one worker thread and runs the endpoint in another. Each request owns
+        # its connection exclusively (opened per request, closed after), so
+        # handing it across threads is safe; the default check made concurrent
+        # page loads fail with sqlite3.ProgrammingError.
+        self._conn = conn if conn is not None else get_db_connection(check_same_thread=False)
 
     def close(self):
         self._conn.close()
