@@ -180,3 +180,36 @@ def test_every_element_id_the_journal_script_looks_up_exists_in_the_page():
 def test_the_journal_page_is_linked_from_every_page_nav():
     for page in ("index.html", "projection.html", "journal.html"):
         assert 'href="/journal"' in (STATIC / page).read_text(), page
+
+
+# -- stylesheet ---------------------------------------------------------------------
+
+
+STYLE_CSS = (STATIC / "style.css").read_text()
+
+# Classes the scripts use only as markers (queried or toggled in JS), with no rules of their own.
+HOOK_ONLY_CLASSES: set[str] = set()
+
+
+def _classes_used(*sources: str) -> set[str]:
+    used: set[str] = set()
+    for source in sources:
+        for value in re.findall(r'class="([^"]*)"', source):
+            # Only plain class names; template expressions (${...}, ternaries) are skipped.
+            used.update(token for token in value.split() if re.fullmatch(r"[A-Za-z_][\w-]*", token))
+        for value in re.findall(r"classList\.(?:add|remove|toggle)\(\"([\w-]+)\"", source):
+            used.add(value)
+    return {c for c in used if not c.startswith("fa-") and c != "fa-solid"}
+
+
+def _classes_defined() -> set[str]:
+    return set(re.findall(r"\.([A-Za-z_][\w-]*)", STYLE_CSS))
+
+
+def test_every_css_class_the_pages_use_is_defined_in_the_stylesheet():
+    """Guards against rules disappearing from style.css (an edit once truncated
+    the file and silently unstyled the Journal page)."""
+    used = _classes_used(JOURNAL_HTML, JOURNAL_JS, PROJECTION_HTML, PROJECTION_JS)
+    assert {"btn", "modal", "icon-btn", "card-header", "var-chip", "status-legend"} <= used, "parser lost track of classes"
+    missing = used - _classes_defined() - HOOK_ONLY_CLASSES
+    assert missing == set(), f"classes used by the pages but not styled: {sorted(missing)}"

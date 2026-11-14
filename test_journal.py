@@ -124,15 +124,6 @@ def test_prepayment_preview_reports_savings_without_saving_anything():
     assert store.entries("prepayment") == []
 
 
-def test_only_loan_observation_cannot_be_voided_but_statements_can():
-    store = store_with_loan()
-    with pytest.raises(journal.JournalError, match="only balance observation"):
-        journal.void_observation(store, NOW, 1)
-    journal.add_loan_statement(store, NOW, as_of="2027-01-31", outstanding_lakhs=47.0)
-    journal.void_observation(store, NOW, 2)
-    assert len(store.observations("loan")) == 1
-
-
 # -- check-ins ------------------------------------------------------------------
 
 
@@ -345,3 +336,153 @@ def test_a_statement_balance_with_a_terms_change_counts_as_a_recorded_fact():
     with pytest.raises(journal.JournalError, match="in the future"):
         journal.add_loan_terms(store, NOW_2026, effective_from="2027-04-01", annual_rate_pct=10.0, emi_lakhs=0.7,
                                statement_balance_lakhs=44.0)
+
+
+# -- editing and deleting -----------------------------------------------------------------
+
+
+def group_ids(store, as_of):
+    return {o["bucket"]: o["id"] for o in store.observations() if o["as_of"] == as_of}
+
+
+def test_editing_a_check_in_replaces_changed_balances_and_keeps_the_old_as_voided():
+    store = InMemoryJournalStore()
+    journal.record_check_in(store, NOW, as_of="2026-09-01", cash_lakhs=5.0, equity_lakhs=50.0, note="first")
+    ids = group_ids(store, "2026-09-01")
+    journal.edit_check_in(store, NOW, ids=ids, as_of="2026-09-02", cash_lakhs=6.0, equity_lakhs=50.0, note="fixed")
+    live = {o["bucket"]: (o["as_of"], o["amount_lakhs"], o["note"]) for o in store.observations()}
+    assert live == {"cash": ("2026-09-02", 6.0, "fixed"), "equity": ("2026-09-02", 50.0, "fixed")}
+    assert {o["id"] for o in store._observations} > set(ids.values())     # the old rows are still stored (voided)
+    assert all(o["voided_at"] for o in store._observations if o["id"] in ids.values())
+
+
+def test_editing_a_check_in_with_nothing_changed_stores_nothing_new():
+    store = InMemoryJournalStore()
+    journal.record_check_in(store, NOW, as_of="2026-09-01", cash_lakhs=5.0, note="n")
+    before = len(store._observations)
+    journal.edit_check_in(store, NOW, ids=group_ids(store, "2026-09-01"), as_of="2026-09-01", cash_lakhs=5.0, note="n")
+    assert len(store._observations) == before
+
+
+def test_editing_a_check_in_can_add_and_remove_buckets():
+    store = InMemoryJournalStore()
+    journal.record_check_in(store, NOW, as_of="2026-09-01", cash_lakhs=5.0, equity_lakhs=50.0)
+    journal.edit_check_in(store, NOW, ids=group_ids(store, "2026-09-01"), as_of="2026-09-01",
+                          cash_lakhs=5.0, debt_lakhs=20.0)
+    assert {o["bucket"]: o["amount_lakhs"] for o in store.observations()} == {"cash": 5.0, "debt": 20.0}
+
+
+def test_editing_a_check_in_to_nothing_asks_for_a_delete_instead():
+    store = InMemoryJournalStore()
+    journal.record_check_in(store, NOW, as_of="2026-09-01", cash_lakhs=5.0)
+    with pytest.raises(journal.JournalError, match="delete it instead"):
+        journal.edit_check_in(store, NOW, ids=group_ids(store, "2026-09-01"), as_of="2026-09-01")
+    assert len(store.observations()) == 1
+
+
+def test_editing_a_check_in_keeps_the_source_of_replaced_loan_balances():
+    store = store_with_loan(as_of="2026-10-31")
+    ids = group_ids(store, "2026-10-31")
+    journal.edit_check_in(store, NOW, ids=ids, as_of="2026-10-30", loan_outstanding_lakhs=49.0)
+    [loan_obs] = store.observations("loan")
+    assert (loan_obs["source"], loan_obs["amount_lakhs"], loan_obs["as_of"]) == ("loan_setup", 49.0, "2026-10-30")
+
+
+def test_a_check_in_edit_cannot_remove_the_loans_only_balance_or_use_future_dates_or_foreign_ids():
+    store = store_with_loan(as_of="2026-10-31")
+    journal.record_check_in(store, NOW, as_of="2026-10-31", cash_lakhs=5.0)
+    ids = group_ids(store, "2026-10-31")
+    with pytest.raises(journal.JournalError, match="only balance"):
+        journal.edit_check_in(store, NOW, ids=ids, as_of="2026-10-31", cash_lakhs=5.0)         # drops the loan balance
+    with pytest.raises(journal.JournalError, match="in the future"):
+        journal.edit_check_in(store, NOW_2026, ids=ids, as_of="2027-01-01", cash_lakhs=5.0, loan_outstanding_lakhs=50.0)
+    with pytest.raises(journal.JournalError, match="Unknown balance"):
+        journal.edit_check_in(store, NOW, ids={"cash": 999}, as_of="2026-10-31", cash_lakhs=1.0)
+    assert len(store.observations()) == 2
+
+
+def test_deleting_a_check_in_voids_every_balance_in_it():
+    store = InMemoryJournalStore()
+    journal.record_check_in(store, NOW, as_of="2026-09-01", cash_lakhs=5.0, equity_lakhs=50.0)
+    journal.record_check_in(store, NOW, as_of="2026-10-01", cash_lakhs=6.0)
+    journal.void_check_in(store, NOW, group_ids(store, "2026-09-01"))
+    assert [(o["as_of"], o["bucket"]) for o in store.observations()] == [("2026-10-01", "cash")]
+    assert len(store._observations) == 3                                  # kept, voided
+
+
+def test_deleting_the_check_in_that_holds_the_loans_only_balance_is_refused_and_changes_nothing():
+    store = store_with_loan(as_of="2026-10-31")
+    journal.record_check_in(store, NOW, as_of="2026-10-31", cash_lakhs=5.0)
+    with pytest.raises(journal.JournalError, match="only balance"):
+        journal.void_check_in(store, NOW, group_ids(store, "2026-10-31"))
+    assert len(store.observations()) == 2
+    journal.add_loan_statement(store, NOW, as_of="2027-01-31", outstanding_lakhs=45.0)
+    journal.void_check_in(store, NOW, group_ids(store, "2026-10-31"))     # another loan balance exists now
+    assert [o["bucket"] for o in store.observations()] == ["loan"]
+
+
+def test_editing_loan_terms_replaces_the_record_and_keeps_the_history():
+    store = store_with_loan()
+    journal.add_loan_terms(store, NOW, effective_from="2027-04-01", annual_rate_pct=10.0, emi_lakhs=0.7)
+    journal.edit_loan_terms(store, NOW, 2, effective_from="2027-05-01", annual_rate_pct=9.5, emi_lakhs=0.65, note="fixed")
+    live = [(t["effective_from"], t["annual_rate_pct"], t["emi_lakhs"], t["note"]) for t in store.terms(1)]
+    assert live[-1] == ("2027-05-01", 9.5, 0.65, "fixed") and len(live) == 2
+    assert len(store._terms) == 3 and store._terms[1]["voided_at"]
+    with pytest.raises(journal.JournalError, match="Unknown loan terms"):
+        journal.edit_loan_terms(store, NOW, 2, effective_from="2027-05-01", annual_rate_pct=9.5, emi_lakhs=0.65)
+
+
+def test_the_opening_terms_can_be_edited_even_though_they_cannot_be_deleted():
+    store = store_with_loan()
+    journal.edit_loan_terms(store, NOW, 1, effective_from="2026-10-31", annual_rate_pct=8.5, emi_lakhs=0.62)
+    assert [t["annual_rate_pct"] for t in store.terms(1)] == [8.5]
+
+
+def test_editing_a_prepayment_replaces_it_and_keeps_the_link_to_the_loan():
+    store = store_with_loan()
+    entry_id = journal.add_prepayment(store, NOW, entry_date="2026-12-05", amount_lakhs=2.0)
+    journal.edit_entry(store, NOW, entry_id, entry_date="2026-12-06", amount_lakhs=2.5, note="bonus")
+    [live] = store.entries("prepayment")
+    assert (live["entry_date"], live["amount_lakhs"], live["note"], live["ref_id"]) == ("2026-12-06", 2.5, "bonus", 1)
+    assert store.entry(entry_id)["voided_at"] == NOW
+
+
+def test_editing_income_changes_amount_status_and_clears_the_approximate_flag_only_if_the_date_moves():
+    store = InMemoryJournalStore(legacy_extra_income=[{"year": 2028, "amount_lakhs": 4.0, "note": "sale"}])
+    journal.migrate_legacy_extra_income(store, NOW)
+    legacy_id = store.entries("income")[0]["id"]
+    journal.edit_entry(store, NOW, legacy_id, entry_date="2028-07-01", amount_lakhs=5.0, note="sale", status="planned")
+    assert store.entries("income")[0]["approximate"] is True and store.entries("income")[0]["amount_lakhs"] == 5.0
+    new_id = store.entries("income")[0]["id"]
+    journal.edit_entry(store, NOW, new_id, entry_date="2028-09-15", amount_lakhs=5.0, status="received")
+    [live] = store.entries("income")
+    assert (live["entry_date"], live["approximate"], live["status"]) == ("2028-09-15", False, "received")
+    assert journal.extra_income_by_year(store) == {2028: 5.0}
+    assert journal.migrate_legacy_extra_income(store, NOW) == 0          # editing never re-imports the legacy row
+
+
+def test_editing_a_transfer_can_change_its_bucket():
+    store = InMemoryJournalStore()
+    entry_id = journal.add_transfer(store, NOW, kind="invest", entry_date="2026-11-01", amount_lakhs=3.0, bucket="equity")
+    journal.edit_entry(store, NOW, entry_id, entry_date="2026-11-02", amount_lakhs=3.5, bucket="debt")
+    assert [(t["from_bucket"], t["to_bucket"], t["amount_lakhs"]) for t in journal.transfers_for_projection(store)] == [
+        ("cash", "debt", 3.5)]
+    entry_id = store.entries("invest")[0]["id"]
+    journal.edit_entry(store, NOW, entry_id, entry_date="2026-11-02", amount_lakhs=3.5)         # bucket kept
+    assert store.entries("invest")[0]["to_bucket"] == "debt"
+
+
+def test_entry_edits_follow_the_same_rules_as_new_entries():
+    store = store_with_loan(as_of="2026-10-31")
+    prepayment = journal.add_prepayment(store, NOW_2026, entry_date="2026-11-01", amount_lakhs=1.0)
+    with pytest.raises(journal.JournalError, match="in the future"):
+        journal.edit_entry(store, NOW_2026, prepayment, entry_date="2027-01-01", amount_lakhs=1.0)
+    income = journal.add_income(store, NOW_2026, entry_date="2027-03-01", amount_lakhs=1.0)
+    journal.edit_entry(store, NOW_2026, income, entry_date="2028-01-01", amount_lakhs=1.0)    # planned: future is fine
+    with pytest.raises(journal.JournalError, match="status"):
+        journal.edit_entry(store, NOW_2026, store.entries("income")[0]["id"], entry_date="2028-01-01", amount_lakhs=1.0, status="maybe")
+    with pytest.raises(journal.JournalError, match="Unknown entry"):
+        journal.edit_entry(store, NOW_2026, 999, entry_date="2026-01-01", amount_lakhs=1.0)
+    journal.void_entry(store, NOW_2026, prepayment)
+    with pytest.raises(journal.JournalError, match="Unknown entry"):
+        journal.edit_entry(store, NOW_2026, prepayment, entry_date="2026-11-02", amount_lakhs=1.0)

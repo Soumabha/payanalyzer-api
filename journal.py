@@ -102,6 +102,17 @@ def add_loan_terms(store, now, *, effective_from, annual_rate_pct, emi_lakhs, no
     return terms_id
 
 
+def edit_loan_terms(store, now, terms_id, *, effective_from, annual_rate_pct, emi_lakhs, note=None):
+    """Correct a terms record. The old record is voided and a corrected one
+    added, so the history keeps what was entered before."""
+    loan = _require_loan(store)
+    if not any(t["id"] == terms_id for t in store.terms(loan["id"])):
+        raise JournalError("Unknown loan terms record.")
+    store.add_terms(loan["id"], _iso(effective_from, "effective_from"), annual_rate_pct, emi_lakhs, note, now)
+    store.void_terms(terms_id, now)
+    store.commit()
+
+
 def void_loan_terms(store, now, terms_id):
     loan = _require_loan(store)
     remaining = store.terms(loan["id"])
@@ -131,18 +142,6 @@ def add_loan_statement(store, now, *, as_of, outstanding_lakhs, note=None):
     )
     store.commit()
     return obs_id
-
-
-def void_observation(store, now, observation_id):
-    target = next((o for o in store.observations() if o["id"] == observation_id), None)
-    if target is None:
-        raise JournalError("Unknown balance observation.")
-    if target["bucket"] == "loan":
-        same_loan = store.observations("loan", target["ref_id"])
-        if len(same_loan) == 1:
-            raise JournalError("The loan's only balance observation can't be voided.")
-    store.void_observation(observation_id, now)
-    store.commit()
 
 
 def _require_loan(store):
@@ -219,6 +218,72 @@ def record_check_in(store, now, *, as_of, cash_lakhs=None, equity_lakhs=None, de
         ids[bucket] = store.add_observation(bucket, ref_id, as_of, value, "check_in", note, now)
     store.commit()
     return ids
+
+
+def _check_in_balances(store, ids):
+    """The live observations a check-in group's {bucket: id} refers to."""
+    live = {o["id"]: o for o in store.observations()}
+    found = {}
+    for bucket, observation_id in ids.items():
+        observation = live.get(observation_id)
+        if observation is None or observation["bucket"] != bucket:
+            raise JournalError("Unknown balance in this check-in.")
+        found[bucket] = observation
+    return found
+
+
+def _loan_balance_would_be_lost(store, removing):
+    """True if voiding these observations would leave the loan with none."""
+    loan_ids = {o["id"] for o in removing if o["bucket"] == "loan"}
+    if not loan_ids:
+        return False
+    loan = get_loan(store)
+    remaining = [o for o in store.observations("loan", loan["id"] if loan else None) if o["id"] not in loan_ids]
+    return not remaining
+
+
+def edit_check_in(store, now, *, ids, as_of, cash_lakhs=None, equity_lakhs=None, debt_lakhs=None,
+                  loan_outstanding_lakhs=None, note=None):
+    """Correct a check-in: `ids` is the {bucket: observation id} of the group
+    being edited. A blank balance removes that bucket from it, a new one adds
+    it; changed balances are replaced (old voided, new added, source kept)."""
+    as_of = _recorded_date(as_of, now, "as_of")
+    old = _check_in_balances(store, ids)
+    values = {"cash": cash_lakhs, "equity": equity_lakhs, "debt": debt_lakhs, "loan": loan_outstanding_lakhs}
+    if all(value is None for value in values.values()):
+        raise JournalError("A check-in needs at least one balance; delete it instead.")
+    loan = get_loan(store)
+    if values["loan"] is not None and loan is None:
+        raise JournalError("No loan is set up yet, so there is no loan balance to check in.")
+    removed = [old[bucket] for bucket, value in values.items() if value is None and bucket in old]
+    if _loan_balance_would_be_lost(store, removed):
+        raise JournalError("The loan's only balance observation can't be removed.")
+
+    for bucket, value in values.items():
+        previous = old.get(bucket)
+        if value is None:
+            if previous:
+                store.void_observation(previous["id"], now)
+        elif previous is None:
+            store.add_observation(bucket, loan["id"] if bucket == "loan" else None, as_of, value, "check_in", note, now)
+        elif (previous["amount_lakhs"], previous["as_of"], previous["note"] or None) != (value, as_of, note or None):
+            store.add_observation(bucket, previous["ref_id"], as_of, value, previous["source"], note, now)
+            store.void_observation(previous["id"], now)
+    store.commit()
+
+
+def void_check_in(store, now, ids):
+    """Delete a check-in (all of its balances). Voided, not erased."""
+    removing = list(_check_in_balances(store, ids).values()) if isinstance(ids, dict) else None
+    if removing is None:
+        raise JournalError("ids must be a {bucket: id} mapping.")
+    if not removing:
+        raise JournalError("Nothing to delete.")
+    if _loan_balance_would_be_lost(store, removing):
+        raise JournalError("The loan's only balance observation can't be deleted.")
+    for observation in removing:
+        store.void_observation(observation["id"], now)
+    store.commit()
 
 
 def check_in_history(store):
@@ -354,6 +419,41 @@ def transfers_for_projection(store) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Entries (shared) and the journal view
 # --------------------------------------------------------------------------- #
+
+def edit_entry(store, now, entry_id, *, entry_date, amount_lakhs, note=None, status=None, bucket=None):
+    """Correct a ledger entry of any kind. The old entry is voided and a
+    corrected one added (same kind and links). `status` applies to income,
+    `bucket` to invest/withdraw; both default to the entry's current value."""
+    old = store.entry(entry_id)
+    if old is None or old["voided_at"]:
+        raise JournalError("Unknown entry.")
+    kind = old["kind"]
+    new = {"kind": kind, "amount_lakhs": amount_lakhs, "note": note, "created_at": now, "ref_id": old["ref_id"]}
+    if kind == "income":
+        status = status or old["status"]
+        if status not in INCOME_STATUSES:
+            raise JournalError(f"status must be one of {INCOME_STATUSES}")
+        entry_date = _iso(entry_date, "entry_date")
+        new.update(
+            entry_date=entry_date, status=status,
+            approximate=bool(old["approximate"]) and entry_date == old["entry_date"],
+        )
+    elif kind == "prepayment":
+        new.update(entry_date=_recorded_date(entry_date, now, "entry_date"))
+    elif kind in ("invest", "withdraw"):
+        bucket = bucket or (old["to_bucket"] if kind == "invest" else old["from_bucket"])
+        if bucket not in INVESTABLE:
+            raise JournalError(f"bucket must be one of {INVESTABLE}")
+        from_bucket, to_bucket = ("cash", bucket) if kind == "invest" else (bucket, "cash")
+        new.update(
+            entry_date=_recorded_date(entry_date, now, "entry_date"), from_bucket=from_bucket, to_bucket=to_bucket
+        )
+    else:
+        raise JournalError("This kind of entry can't be edited.")
+    store.add_entry(new)
+    store.void_entry(entry_id, now)
+    store.commit()
+
 
 def void_entry(store, now, entry_id):
     entry = store.entry(entry_id)

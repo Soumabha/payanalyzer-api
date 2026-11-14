@@ -90,6 +90,13 @@ class LoanTermsChange(BaseModel):
     statement_balance_lakhs: Optional[float] = None
 
 
+class LoanTermsEdit(BaseModel):
+    effective_from: str
+    annual_rate_pct: float
+    emi_lakhs: float
+    note: Optional[str] = None
+
+
 class PrepaymentIn(BaseModel):
     entry_date: str
     amount_lakhs: float
@@ -109,6 +116,22 @@ class CheckIn(BaseModel):
     debt_lakhs: Optional[float] = None
     loan_outstanding_lakhs: Optional[float] = None
     note: Optional[str] = None
+
+
+class CheckInEdit(CheckIn):
+    ids: dict[str, int]
+
+
+class CheckInVoid(BaseModel):
+    ids: dict[str, int]
+
+
+class EntryEdit(BaseModel):
+    entry_date: str
+    amount_lakhs: float
+    note: Optional[str] = None
+    status: Optional[str] = None
+    bucket: Optional[str] = None
 
 
 class IncomeIn(BaseModel):
@@ -441,6 +464,12 @@ def create_loan_terms(payload: LoanTermsChange, store=Depends(get_journal_store)
     return get_loan_view(store)
 
 
+@app.put("/api/loan/terms/{terms_id}")
+def update_loan_terms(terms_id: int, payload: LoanTermsEdit, store=Depends(get_journal_store)):
+    journal.edit_loan_terms(store, _now(), terms_id, **payload.dict())
+    return get_loan_view(store)
+
+
 @app.post("/api/loan/terms/{terms_id}/void")
 def void_loan_terms(terms_id: int, store=Depends(get_journal_store)):
     journal.void_loan_terms(store, _now(), terms_id)
@@ -502,9 +531,21 @@ def void_journal_entry(entry_id: int, store=Depends(get_journal_store)):
     return get_journal(store)
 
 
-@app.post("/api/journal/observations/{observation_id}/void")
-def void_journal_observation(observation_id: int, store=Depends(get_journal_store)):
-    journal.void_observation(store, _now(), observation_id)
+@app.put("/api/journal/check-in")
+def update_check_in(payload: CheckInEdit, store=Depends(get_journal_store)):
+    journal.edit_check_in(store, _now(), **payload.dict())
+    return get_journal(store)
+
+
+@app.post("/api/journal/check-in/void")
+def void_check_in(payload: CheckInVoid, store=Depends(get_journal_store)):
+    journal.void_check_in(store, _now(), payload.ids)
+    return get_journal(store)
+
+
+@app.put("/api/journal/entries/{entry_id}")
+def update_journal_entry(entry_id: int, payload: EntryEdit, store=Depends(get_journal_store)):
+    journal.edit_entry(store, _now(), entry_id, **payload.dict())
     return get_journal(store)
 
 

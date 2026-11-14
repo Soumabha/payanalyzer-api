@@ -26,31 +26,38 @@
 
             <div class="card" style="grid-column: span 12;">
                 <section>
-                    <h2><i class="fa-solid fa-camera"></i> Check-ins</h2>
-                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Record your real balances on a date. The projection restarts from your latest check-in each year; earlier rows are not rewritten.</div>
-                    <div class="section-actions">
-                        <button class="btn" id="newCheckInBtn"><i class="fa-solid fa-plus"></i> New check-in</button>
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-camera"></i> Check-ins</h2>
+                        <div class="card-actions">
+                            <button class="btn" id="newCheckInBtn"><i class="fa-solid fa-plus"></i> New check-in</button>
+                        </div>
                     </div>
+                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Record your real balances on a date. The projection continues from your latest check-in; earlier months are not rewritten.</div>
                     <div id="checkIns" class="table-container journal-table"></div>
                 </section>
             </div>
 
             <div class="card" style="grid-column: span 12;">
                 <section>
-                    <h2><i class="fa-solid fa-landmark"></i> Loan</h2>
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-landmark"></i> Loan</h2>
+                        <div class="card-actions" id="loanActions"></div>
+                    </div>
                     <div id="loanSection"></div>
                 </section>
             </div>
 
             <div class="card" style="grid-column: span 12;">
                 <section>
-                    <h2><i class="fa-solid fa-list"></i> Entries</h2>
-                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Extra income and moves between cash and your investments. Planned entries count towards the projection; once their date passes you'll be asked whether they happened.</div>
-                    <div class="section-actions">
-                        <button class="btn" id="addIncomeBtn"><i class="fa-solid fa-plus"></i> Extra income</button>
-                        <button class="btn btn-secondary" id="investBtn"><i class="fa-solid fa-arrow-trend-up"></i> Invest from cash</button>
-                        <button class="btn btn-secondary" id="withdrawBtn"><i class="fa-solid fa-arrow-down"></i> Withdraw to cash</button>
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-list"></i> Entries</h2>
+                        <div class="card-actions">
+                            <button class="btn" id="addIncomeBtn"><i class="fa-solid fa-plus"></i> Extra income</button>
+                            <button class="btn btn-secondary" id="investBtn"><i class="fa-solid fa-arrow-trend-up"></i> Invest from cash</button>
+                            <button class="btn btn-secondary" id="withdrawBtn"><i class="fa-solid fa-arrow-down"></i> Withdraw to cash</button>
+                        </div>
                     </div>
+                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Extra income and moves between cash and your investments. Planned entries count towards the projection; once their date passes you'll be asked whether they happened.</div>
                     <div id="entries" class="table-container journal-table"></div>
                 </section>
             </div>
