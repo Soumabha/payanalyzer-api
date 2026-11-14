@@ -294,3 +294,42 @@ def preview_prepayment(
         "months_saved": len(before) - len(after) if both_cleared else None,
         "interest_saved": round(sum(r["interest"] for r in before) - sum(r["interest"] for r in after), 4),
     }
+
+
+def merge_timelines(timelines: list[list[dict]]) -> list[dict]:
+    """
+    Sum several loans' monthly timelines (from build_timeline) into one, so the
+    projection sees total EMI, interest, principal, prepayments and balance.
+
+    A loan with no row for a month (after its payoff) contributes zeros and a
+    zero balance. The combined balance is unknown (None) while any loan's is.
+    `drift` is the summed drift of the loans that were re-based that month, and
+    `estimated` / `rebased` are true if any loan's row is.
+    """
+    timelines = [timeline for timeline in timelines if timeline]
+    if len(timelines) == 1:
+        return timelines[0]
+    by_loan = [{row["month"]: row for row in timeline} for timeline in timelines]
+    months = sorted({month for rows in by_loan for month in rows})
+    merged = []
+    for month in months:
+        rows = [loan_rows[month] for loan_rows in by_loan if month in loan_rows]
+        closings = [row["closing"] for row in rows]
+        drifts = [row["drift"] for row in rows if row["drift"] is not None]
+        merged.append({
+            "month": month,
+            "interest": round(sum(row["interest"] for row in rows), 4),
+            "principal": round(sum(row["principal"] for row in rows), 4),
+            "emi_paid": round(sum(row["emi_paid"] for row in rows), 4),
+            "prepayment": round(sum(row["prepayment"] for row in rows), 4),
+            "closing": None if any(c is None for c in closings) else round(sum(closings), 4),
+            "estimated": any(row["estimated"] for row in rows),
+            "rebased": any(row["rebased"] for row in rows),
+            "drift": round(sum(drifts), 4) if drifts else None,
+        })
+    return merged
+
+
+def monthly_emi_in_force(terms: list[dict], year_month: str) -> float:
+    """The scheduled monthly EMI a loan's terms give for `year_month`."""
+    return terms_for_month(terms, year_month)["emi_lakhs"]

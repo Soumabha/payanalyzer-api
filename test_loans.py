@@ -8,6 +8,8 @@ from loans import (
     build_timeline,
     emi_from_tenure,
     forward_schedule,
+    merge_timelines,
+    monthly_emi_in_force,
     monthly_cash_outflow,
     preview_prepayment,
     summarize_schedule,
@@ -314,3 +316,64 @@ def test_drift_compares_like_with_like_when_the_next_statement_month_has_a_late_
     july = {r["month"]: r for r in timeline}["2026-07"]
     assert july["drift"] == pytest.approx(0.0, abs=1e-3)
     assert july["closing"] == pytest.approx(computed - 2.0, abs=1e-3)
+
+
+# -- merging several loans into one timeline -----------------------------------------------
+
+
+def _timeline(balance, as_of, rate, months, prepayments=(), extra_observations=(), end_year=2040):
+    observations = [obs(balance, as_of), *extra_observations]
+    loan_terms = [{"effective_from": as_of, "annual_rate_pct": rate, "emi_lakhs": emi_from_tenure(balance, rate, months)}]
+    return build_timeline(observations, loan_terms, list(prepayments), 2026, end_year)
+
+
+def test_merging_one_timeline_changes_nothing_and_none_gives_empty():
+    one = _timeline(50.0, "2026-01-31", 9.0, 120)
+    assert merge_timelines([one]) == one
+    assert merge_timelines([]) == [] and merge_timelines([[]]) == []
+
+
+def test_merged_months_are_the_sums_of_every_loans_columns():
+    a = _timeline(50.0, "2026-01-31", 9.0, 120)
+    b = _timeline(20.0, "2026-01-31", 11.0, 60, prepayments=[{"date": "2026-06-10", "amount_lakhs": 2.0}])
+    merged = {r["month"]: r for r in merge_timelines([a, b])}
+    left, right = ({r["month"]: r for r in t} for t in (a, b))
+    for month in ("2026-03", "2026-06", "2028-12"):
+        for field in ("emi_paid", "interest", "principal", "prepayment", "closing"):
+            assert merged[month][field] == pytest.approx(left[month][field] + right[month][field], abs=2e-4), (month, field)
+
+
+def test_a_loan_that_has_cleared_contributes_zeros_and_the_rest_continue():
+    short = _timeline(5.0, "2026-01-31", 9.0, 12)
+    long = _timeline(50.0, "2026-01-31", 9.0, 120)
+    merged = {r["month"]: r for r in merge_timelines([short, long])}
+    assert "2027-06" not in {r["month"] for r in short}
+    assert merged["2027-06"]["emi_paid"] == {r["month"]: r for r in long}["2027-06"]["emi_paid"]
+    assert merged["2027-06"]["closing"] == {r["month"]: r for r in long}["2027-06"]["closing"]
+
+
+def test_the_combined_balance_is_unknown_while_any_loans_balance_is():
+    early = _timeline(50.0, "2026-01-31", 9.0, 120)
+    late = _timeline(20.0, "2026-09-30", 11.0, 60)                  # its balance is unknown before September
+    merged = {r["month"]: r for r in merge_timelines([early, late])}
+    assert merged["2026-05"]["closing"] is None and merged["2026-05"]["estimated"] is True
+    assert merged["2026-12"]["closing"] is not None and merged["2026-12"]["estimated"] is False
+
+
+def test_drift_is_summed_across_loans_that_were_rebased_that_month():
+    schedule = amortize(PRINCIPAL, "2026-01", [terms()], [])
+    computed = {r["month"]: r["closing"] for r in schedule}["2026-07"]
+    drifting = _timeline(PRINCIPAL, "2026-01-31", 9.0, 120, extra_observations=[obs(computed - 2.0, "2026-07-31")])
+    other = _timeline(20.0, "2026-01-31", 11.0, 60, extra_observations=[obs(1.0, "2026-07-31")])
+    plain = _timeline(30.0, "2026-01-31", 10.0, 90)
+    merged = {r["month"]: r for r in merge_timelines([drifting, other, plain])}
+    own = ({r["month"]: r for r in other}["2026-07"]["drift"])
+    assert merged["2026-07"]["drift"] == pytest.approx(2.0 + own, abs=1e-3)
+    assert merged["2026-07"]["rebased"] is True
+    assert merged["2026-06"]["drift"] is None
+
+
+def test_monthly_emi_in_force_follows_the_terms():
+    changed = [terms(), terms(emi=0.9, effective_from="2027-04-01", id=2)]
+    assert monthly_emi_in_force(changed, "2027-03") == terms()["emi_lakhs"]
+    assert monthly_emi_in_force(changed, "2027-04") == 0.9

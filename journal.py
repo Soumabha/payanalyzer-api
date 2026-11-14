@@ -21,6 +21,8 @@ from loans import (
     build_timeline,
     emi_from_tenure,
     forward_schedule,
+    merge_timelines,
+    monthly_emi_in_force,
     preview_prepayment,
     summarize_schedule,
 )
@@ -61,18 +63,22 @@ def _recorded_date(value, now, field="date") -> str:
 # Loan
 # --------------------------------------------------------------------------- #
 
-def get_loan(store):
-    """The single loan (the schema allows several; the app uses one for now)."""
-    loans = store.loans()
-    return loans[0] if loans else None
+def get_loans(store):
+    """Every open loan, oldest first."""
+    return store.loans()
+
+
+def _require_loan(store, loan_id):
+    loan = next((l for l in store.loans() if l["id"] == loan_id), None)
+    if loan is None:
+        raise JournalError("Unknown loan.")
+    return loan
 
 
 def setup_loan(store, now, *, name, outstanding_lakhs, as_of, annual_rate_pct, emi_lakhs=None, remaining_months=None):
-    """Create the loan with its opening balance (the first observation) and
+    """Create a loan with its opening balance (the first observation) and
     opening terms. Give either the EMI or the remaining months; the other is
-    derived."""
-    if get_loan(store) is not None:
-        raise JournalError("A loan is already set up. Record rate/EMI changes and prepayments against it instead.")
+    derived. Any number of loans can be set up."""
     if emi_lakhs is None and remaining_months is None:
         raise JournalError("Provide either emi_lakhs or remaining_months.")
     as_of = _recorded_date(as_of, now, "as_of")
@@ -85,11 +91,12 @@ def setup_loan(store, now, *, name, outstanding_lakhs, as_of, annual_rate_pct, e
     return loan_id
 
 
-def add_loan_terms(store, now, *, effective_from, annual_rate_pct, emi_lakhs, note=None, statement_balance_lakhs=None):
+def add_loan_terms(store, now, *, loan_id, effective_from, annual_rate_pct, emi_lakhs, note=None,
+                   statement_balance_lakhs=None):
     """Record a rate and/or EMI change. This never creates a balance
     observation by itself; one is added only if the caller also supplies the
     statement balance as of the effective date."""
-    loan = _require_loan(store)
+    loan = _require_loan(store, loan_id)
     effective_from = _iso(effective_from, "effective_from")
     if statement_balance_lakhs is not None:
         _recorded_date(effective_from, now, "effective_from (a statement balance is a recorded fact)")
@@ -102,30 +109,34 @@ def add_loan_terms(store, now, *, effective_from, annual_rate_pct, emi_lakhs, no
     return terms_id
 
 
+def _find_terms(store, terms_id):
+    """(loan, that loan's live terms, the record) for a terms id."""
+    for loan in store.loans():
+        live = store.terms(loan["id"])
+        if any(t["id"] == terms_id for t in live):
+            return loan, live
+    raise JournalError("Unknown loan terms record.")
+
+
 def edit_loan_terms(store, now, terms_id, *, effective_from, annual_rate_pct, emi_lakhs, note=None):
     """Correct a terms record. The old record is voided and a corrected one
     added, so the history keeps what was entered before."""
-    loan = _require_loan(store)
-    if not any(t["id"] == terms_id for t in store.terms(loan["id"])):
-        raise JournalError("Unknown loan terms record.")
+    loan, _ = _find_terms(store, terms_id)
     store.add_terms(loan["id"], _iso(effective_from, "effective_from"), annual_rate_pct, emi_lakhs, note, now)
     store.void_terms(terms_id, now)
     store.commit()
 
 
 def void_loan_terms(store, now, terms_id):
-    loan = _require_loan(store)
-    remaining = store.terms(loan["id"])
-    if not any(t["id"] == terms_id for t in remaining):
-        raise JournalError("Unknown loan terms record.")
-    if len(remaining) == 1:
+    _, live = _find_terms(store, terms_id)
+    if len(live) == 1:
         raise JournalError("The loan's only terms record can't be voided.")
     store.void_terms(terms_id, now)
     store.commit()
 
 
-def add_prepayment(store, now, *, entry_date, amount_lakhs, note=None):
-    loan = _require_loan(store)
+def add_prepayment(store, now, *, loan_id, entry_date, amount_lakhs, note=None):
+    loan = _require_loan(store, loan_id)
     entry_id = store.add_entry({
         "kind": "prepayment", "entry_date": _recorded_date(entry_date, now, "entry_date"), "amount_lakhs": amount_lakhs,
         "ref_id": loan["id"], "note": note, "created_at": now,
@@ -134,9 +145,9 @@ def add_prepayment(store, now, *, entry_date, amount_lakhs, note=None):
     return entry_id
 
 
-def add_loan_statement(store, now, *, as_of, outstanding_lakhs, note=None):
+def add_loan_statement(store, now, *, loan_id, as_of, outstanding_lakhs, note=None):
     """A bank-statement balance (a loan observation)."""
-    loan = _require_loan(store)
+    loan = _require_loan(store, loan_id)
     obs_id = store.add_observation(
         "loan", loan["id"], _recorded_date(as_of, now, "as_of"), outstanding_lakhs, "statement", note, now
     )
@@ -144,18 +155,8 @@ def add_loan_statement(store, now, *, as_of, outstanding_lakhs, note=None):
     return obs_id
 
 
-def _require_loan(store):
-    loan = get_loan(store)
-    if loan is None:
-        raise JournalError("No loan is set up yet.")
-    return loan
-
-
-def loan_inputs(store):
-    """(loan, terms, loan observations, prepayments) or None without a loan."""
-    loan = get_loan(store)
-    if loan is None:
-        return None
+def loan_inputs(store, loan):
+    """(loan, terms, loan observations, prepayments) or None if it has no balance yet."""
     observations = store.observations("loan", loan["id"])
     if not observations:
         return None
@@ -167,16 +168,18 @@ def loan_inputs(store):
     return loan, store.terms(loan["id"]), observations, prepayments
 
 
-def loan_view(store, today: date, start_year, end_year):
-    """Everything the loan section shows."""
-    inputs = loan_inputs(store)
+def _single_loan_view(store, loan, today: date, start_year, end_year):
+    inputs = loan_inputs(store, loan)
     if inputs is None:
-        return {"loan": None}
-    loan, terms, observations, prepayments = inputs
+        return None
+    _, terms, observations, prepayments = inputs
     today_month = today.strftime("%Y-%m")
     return {
         "loan": loan,
-        "summary": summarize_schedule(observations, terms, prepayments, today_month),
+        "summary": {
+            **summarize_schedule(observations, terms, prepayments, today_month),
+            "monthly_emi": monthly_emi_in_force(terms, today_month),
+        },
         "terms": terms,
         "observations": observations,
         "prepayments": [e for e in store.entries("prepayment") if e["ref_id"] == loan["id"]],
@@ -185,10 +188,32 @@ def loan_view(store, today: date, start_year, end_year):
     }
 
 
-def prepayment_preview(store, *, entry_date, amount_lakhs):
-    inputs = loan_inputs(store)
+def combined_summary(views):
+    """Totals across loans for the strip above them (None with fewer than two)."""
+    if len(views) < 2:
+        return None
+    paid_off = [v["summary"]["payoff_month"] for v in views]
+    return {
+        "current_balance": round(sum(v["summary"]["current_balance"] for v in views), 4),
+        "monthly_emi": round(sum(v["summary"]["monthly_emi"] for v in views), 4),
+        "total_interest_remaining": round(sum(v["summary"]["total_interest_remaining"] for v in views), 4),
+        "payoff_month": None if any(p is None for p in paid_off) else max(paid_off),
+    }
+
+
+def loan_views(store, today: date, start_year, end_year):
+    """Everything the loan section shows: one view per loan plus the totals."""
+    views = [
+        view for loan in get_loans(store)
+        if (view := _single_loan_view(store, loan, today, start_year, end_year)) is not None
+    ]
+    return {"loans": views, "combined": combined_summary(views)}
+
+
+def prepayment_preview(store, *, loan_id, entry_date, amount_lakhs):
+    inputs = loan_inputs(store, _require_loan(store, loan_id))
     if inputs is None:
-        raise JournalError("No loan is set up yet.")
+        raise JournalError("This loan has no balance yet.")
     _, terms, observations, prepayments = inputs
     return preview_prepayment(
         observations, terms, prepayments, {"date": _iso(entry_date, "entry_date"), "amount_lakhs": amount_lakhs}
@@ -197,90 +222,119 @@ def prepayment_preview(store, *, entry_date, amount_lakhs):
 
 # --------------------------------------------------------------------------- #
 # Check-ins
+#
+# A check-in is a dated group of balances, keyed "cash", "equity", "debt" and
+# "loan_<id>" (one per loan).
 # --------------------------------------------------------------------------- #
 
+def _loan_key(loan_id) -> str:
+    return f"loan_{loan_id}"
+
+
+def _split_balances(cash_lakhs, equity_lakhs, debt_lakhs, loan_balances):
+    """{key: value} for every supplied balance; loan_balances is {loan id: value}."""
+    values = {"cash": cash_lakhs, "equity": equity_lakhs, "debt": debt_lakhs}
+    for loan_id, value in (loan_balances or {}).items():
+        values[_loan_key(int(loan_id))] = value
+    return values
+
+
+def _observation_target(store, key):
+    """(bucket, ref_id) a balance key stands for; loan keys must name a real loan."""
+    if key in ("cash", "equity", "debt"):
+        return key, None
+    if key.startswith("loan_"):
+        loan_id = int(key[5:])
+        _require_loan(store, loan_id)
+        return "loan", loan_id
+    raise JournalError(f"Unknown balance {key!r}.")
+
+
 def record_check_in(store, now, *, as_of, cash_lakhs=None, equity_lakhs=None, debt_lakhs=None,
-                    loan_outstanding_lakhs=None, note=None):
+                    loan_balances=None, note=None):
     """One dated snapshot: each supplied balance becomes an observation."""
-    balances = {
-        "cash": cash_lakhs, "equity": equity_lakhs, "debt": debt_lakhs, "loan": loan_outstanding_lakhs,
-    }
-    supplied = {bucket: value for bucket, value in balances.items() if value is not None}
+    supplied = {k: v for k, v in _split_balances(cash_lakhs, equity_lakhs, debt_lakhs, loan_balances).items()
+                if v is not None}
     if not supplied:
         raise JournalError("A check-in needs at least one balance.")
     as_of = _recorded_date(as_of, now, "as_of")
-    loan = get_loan(store)
-    if "loan" in supplied and loan is None:
-        raise JournalError("No loan is set up yet, so there is no loan balance to check in.")
+    targets = {key: _observation_target(store, key) for key in supplied}
     ids = {}
-    for bucket, value in supplied.items():
-        ref_id = loan["id"] if bucket == "loan" else None
-        ids[bucket] = store.add_observation(bucket, ref_id, as_of, value, "check_in", note, now)
+    for key, value in supplied.items():
+        bucket, ref_id = targets[key]
+        ids[key] = store.add_observation(bucket, ref_id, as_of, value, "check_in", note, now)
     store.commit()
     return ids
 
 
+def _observation_key(observation) -> str:
+    return _loan_key(observation["ref_id"]) if observation["bucket"] == "loan" else observation["bucket"]
+
+
 def _check_in_balances(store, ids):
-    """The live observations a check-in group's {bucket: id} refers to."""
+    """The live observations a check-in group's {key: id} refers to."""
     live = {o["id"]: o for o in store.observations()}
     found = {}
-    for bucket, observation_id in ids.items():
+    for key, observation_id in ids.items():
         observation = live.get(observation_id)
-        if observation is None or observation["bucket"] != bucket:
+        if observation is None or _observation_key(observation) != key:
             raise JournalError("Unknown balance in this check-in.")
-        found[bucket] = observation
+        found[key] = observation
     return found
 
 
-def _loan_balance_would_be_lost(store, removing):
-    """True if voiding these observations would leave the loan with none."""
-    loan_ids = {o["id"] for o in removing if o["bucket"] == "loan"}
-    if not loan_ids:
-        return False
-    loan = get_loan(store)
-    remaining = [o for o in store.observations("loan", loan["id"] if loan else None) if o["id"] not in loan_ids]
-    return not remaining
+def _a_loan_would_lose_all_balances(store, removing):
+    """True if voiding these observations would leave some loan with none."""
+    gone: dict[int, set] = {}
+    for observation in removing:
+        if observation["bucket"] == "loan":
+            gone.setdefault(observation["ref_id"], set()).add(observation["id"])
+    return any(
+        not [o for o in store.observations("loan", loan_id) if o["id"] not in ids]
+        for loan_id, ids in gone.items()
+    )
 
 
 def edit_check_in(store, now, *, ids, as_of, cash_lakhs=None, equity_lakhs=None, debt_lakhs=None,
-                  loan_outstanding_lakhs=None, note=None):
-    """Correct a check-in: `ids` is the {bucket: observation id} of the group
-    being edited. A blank balance removes that bucket from it, a new one adds
-    it; changed balances are replaced (old voided, new added, source kept)."""
+                  loan_balances=None, note=None):
+    """Correct a check-in: `ids` is the {key: observation id} of the group being
+    edited. A blank balance removes it from the group, a new one adds it;
+    changed balances are replaced (old voided, new added, source kept)."""
     as_of = _recorded_date(as_of, now, "as_of")
     old = _check_in_balances(store, ids)
-    values = {"cash": cash_lakhs, "equity": equity_lakhs, "debt": debt_lakhs, "loan": loan_outstanding_lakhs}
+    values = _split_balances(cash_lakhs, equity_lakhs, debt_lakhs, loan_balances)
+    for key in old:
+        values.setdefault(key, None)            # a balance not mentioned at all is removed
     if all(value is None for value in values.values()):
         raise JournalError("A check-in needs at least one balance; delete it instead.")
-    loan = get_loan(store)
-    if values["loan"] is not None and loan is None:
-        raise JournalError("No loan is set up yet, so there is no loan balance to check in.")
-    removed = [old[bucket] for bucket, value in values.items() if value is None and bucket in old]
-    if _loan_balance_would_be_lost(store, removed):
-        raise JournalError("The loan's only balance observation can't be removed.")
+    targets = {key: _observation_target(store, key) for key, value in values.items() if value is not None}
+    removed = [old[key] for key, value in values.items() if value is None and key in old]
+    if _a_loan_would_lose_all_balances(store, removed):
+        raise JournalError("A loan's only balance observation can't be removed.")
 
-    for bucket, value in values.items():
-        previous = old.get(bucket)
+    for key, value in values.items():
+        previous = old.get(key)
         if value is None:
             if previous:
                 store.void_observation(previous["id"], now)
         elif previous is None:
-            store.add_observation(bucket, loan["id"] if bucket == "loan" else None, as_of, value, "check_in", note, now)
+            bucket, ref_id = targets[key]
+            store.add_observation(bucket, ref_id, as_of, value, "check_in", note, now)
         elif (previous["amount_lakhs"], previous["as_of"], previous["note"] or None) != (value, as_of, note or None):
-            store.add_observation(bucket, previous["ref_id"], as_of, value, previous["source"], note, now)
+            store.add_observation(previous["bucket"], previous["ref_id"], as_of, value, previous["source"], note, now)
             store.void_observation(previous["id"], now)
     store.commit()
 
 
 def void_check_in(store, now, ids):
     """Delete a check-in (all of its balances). Voided, not erased."""
-    removing = list(_check_in_balances(store, ids).values()) if isinstance(ids, dict) else None
-    if removing is None:
-        raise JournalError("ids must be a {bucket: id} mapping.")
+    if not isinstance(ids, dict):
+        raise JournalError("ids must be a {balance: id} mapping.")
+    removing = list(_check_in_balances(store, ids).values())
     if not removing:
         raise JournalError("Nothing to delete.")
-    if _loan_balance_would_be_lost(store, removing):
-        raise JournalError("The loan's only balance observation can't be deleted.")
+    if _a_loan_would_lose_all_balances(store, removing):
+        raise JournalError("A loan's only balance observation can't be deleted.")
     for observation in removing:
         store.void_observation(observation["id"], now)
     store.commit()
@@ -291,8 +345,9 @@ def check_in_history(store):
     grouped: dict[str, dict] = {}
     for obs in store.observations():
         entry = grouped.setdefault(obs["as_of"], {"as_of": obs["as_of"], "balances": {}, "ids": {}, "note": obs["note"]})
-        entry["balances"][obs["bucket"]] = obs["amount_lakhs"]
-        entry["ids"][obs["bucket"]] = obs["id"]
+        key = _observation_key(obs)
+        entry["balances"][key] = obs["amount_lakhs"]
+        entry["ids"][key] = obs["id"]
     return sorted(grouped.values(), key=lambda g: g["as_of"], reverse=True)
 
 
@@ -478,23 +533,29 @@ def projection_inputs(store, start_year, end_year, include_actuals: bool) -> dic
     """Everything run_projection() takes from the journal. With an empty
     journal every value is empty/None, so the projection is the plain forecast.
 
+    The loans are merged into ONE monthly timeline (their EMI, interest,
+    principal, prepayments and balances summed), so the projection has the same
+    rows however many loans there are.
+
     include_actuals=False is the PLAN view: extra income (planned or received)
-    and the loan as set up (opening balance + terms changes, no prepayments, no
+    and each loan as set up (opening balance + terms changes, no prepayments, no
     later statement balances). include_actuals=True adds what really happened:
     prepayments, later loan balances, cash/equity/debt check-ins and
     invest/withdraw transfers.
     """
-    loan_timeline = None
-    inputs = loan_inputs(store)
-    if inputs is not None:
+    timelines = []
+    for loan in get_loans(store):
+        inputs = loan_inputs(store, loan)
+        if inputs is None:
+            continue
         _, terms, observations, prepayments = inputs
         if not include_actuals:
             observations = [o for o in observations if o["source"] == "loan_setup"] or observations[:1]
             prepayments = []
-        loan_timeline = build_timeline(observations, terms, prepayments, start_year, end_year) or None
+        timelines.append(build_timeline(observations, terms, prepayments, start_year, end_year))
     return {
         "extra_income_by_year": extra_income_by_year(store),
-        "loan_timeline": loan_timeline,
+        "loan_timeline": merge_timelines(timelines) or None,
         "observations": (
             [o for o in store.observations() if o["bucket"] in ("cash", "equity", "debt")]
             if include_actuals else []

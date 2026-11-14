@@ -74,7 +74,7 @@ class ExtraIncomeEntry(BaseModel):
 
 
 class LoanSetup(BaseModel):
-    name: str = "Home loan"
+    name: str = "Loan"
     outstanding_lakhs: float
     as_of: str
     annual_rate_pct: float
@@ -114,7 +114,7 @@ class CheckIn(BaseModel):
     cash_lakhs: Optional[float] = None
     equity_lakhs: Optional[float] = None
     debt_lakhs: Optional[float] = None
-    loan_outstanding_lakhs: Optional[float] = None
+    loan_balances: Optional[dict[str, float]] = None      # {loan id: outstanding}
     note: Optional[str] = None
 
 
@@ -442,9 +442,9 @@ def get_fire_projection(
 
 # --- Journal: loan, check-ins, income, transfers ---------------------------
 
-@app.get("/api/loan")
-def get_loan_view(store=Depends(get_journal_store)):
-    view = journal.loan_view(store, datetime.now().date(), PROJECTION_START_YEAR, PROJECTION_END_YEAR)
+@app.get("/api/loans")
+def get_loans_view(store=Depends(get_journal_store)):
+    view = journal.loan_views(store, datetime.now().date(), PROJECTION_START_YEAR, PROJECTION_END_YEAR)
     view["legacy"] = {
         key: value for key, value in get_assumptions().items()
         if key in ("loan_outstanding_lakhs", "annual_emi_lakhs", "loan_end_year")
@@ -452,45 +452,47 @@ def get_loan_view(store=Depends(get_journal_store)):
     return view
 
 
-@app.post("/api/loan")
+@app.post("/api/loans")
 def create_loan(payload: LoanSetup, store=Depends(get_journal_store)):
     journal.setup_loan(store, _now(), **payload.dict())
-    return get_loan_view(store)
+    return get_loans_view(store)
 
 
-@app.post("/api/loan/terms")
-def create_loan_terms(payload: LoanTermsChange, store=Depends(get_journal_store)):
-    journal.add_loan_terms(store, _now(), **payload.dict())
-    return get_loan_view(store)
+@app.post("/api/loans/{loan_id}/terms")
+def create_loan_terms(loan_id: int, payload: LoanTermsChange, store=Depends(get_journal_store)):
+    journal.add_loan_terms(store, _now(), loan_id=loan_id, **payload.dict())
+    return get_loans_view(store)
 
 
-@app.put("/api/loan/terms/{terms_id}")
+@app.put("/api/loan-terms/{terms_id}")
 def update_loan_terms(terms_id: int, payload: LoanTermsEdit, store=Depends(get_journal_store)):
     journal.edit_loan_terms(store, _now(), terms_id, **payload.dict())
-    return get_loan_view(store)
+    return get_loans_view(store)
 
 
-@app.post("/api/loan/terms/{terms_id}/void")
+@app.post("/api/loan-terms/{terms_id}/void")
 def void_loan_terms(terms_id: int, store=Depends(get_journal_store)):
     journal.void_loan_terms(store, _now(), terms_id)
-    return get_loan_view(store)
+    return get_loans_view(store)
 
 
-@app.post("/api/loan/prepayments")
-def create_prepayment(payload: PrepaymentIn, store=Depends(get_journal_store)):
-    journal.add_prepayment(store, _now(), **payload.dict())
-    return get_loan_view(store)
+@app.post("/api/loans/{loan_id}/prepayments")
+def create_prepayment(loan_id: int, payload: PrepaymentIn, store=Depends(get_journal_store)):
+    journal.add_prepayment(store, _now(), loan_id=loan_id, **payload.dict())
+    return get_loans_view(store)
 
 
-@app.post("/api/loan/prepayment-preview")
-def preview_prepayment(payload: PrepaymentIn, store=Depends(get_journal_store)):
-    return journal.prepayment_preview(store, entry_date=payload.entry_date, amount_lakhs=payload.amount_lakhs)
+@app.post("/api/loans/{loan_id}/prepayment-preview")
+def preview_prepayment(loan_id: int, payload: PrepaymentIn, store=Depends(get_journal_store)):
+    return journal.prepayment_preview(
+        store, loan_id=loan_id, entry_date=payload.entry_date, amount_lakhs=payload.amount_lakhs
+    )
 
 
-@app.post("/api/loan/statement")
-def create_loan_statement(payload: LoanStatement, store=Depends(get_journal_store)):
-    journal.add_loan_statement(store, _now(), **payload.dict())
-    return get_loan_view(store)
+@app.post("/api/loans/{loan_id}/statement")
+def create_loan_statement(loan_id: int, payload: LoanStatement, store=Depends(get_journal_store)):
+    journal.add_loan_statement(store, _now(), loan_id=loan_id, **payload.dict())
+    return get_loans_view(store)
 
 
 @app.get("/api/journal")

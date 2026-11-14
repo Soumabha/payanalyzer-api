@@ -1,13 +1,22 @@
-// Journal page: check-ins, the loan, and ledger entries (extra income and
-// moves between cash and investments). All amounts are in lakhs.
+// Journal page: check-ins, loans (any number), and ledger entries (extra income
+// and moves between cash and investments). All amounts are in lakhs.
 //
 // Every server- or user-supplied string that reaches innerHTML goes through
 // escapeHtml() (static/html-utils.js).
 
 const SCHEDULE_PREVIEW_ROWS = 24;
-let scheduleExpanded = false;
+const expandedSchedules = new Set();   // loan ids whose full schedule is open
 let lastJournal = null;
-let lastLoan = null;
+let lastLoans = null;                  // {loans: [view...], combined, legacy}
+
+function loanViews() {
+    return (lastLoans && lastLoans.loans) || [];
+}
+
+function loanName(loanId) {
+    const view = loanViews().find((v) => v.loan.id === Number(loanId));
+    return view ? view.loan.name : `loan ${loanId}`;
+}
 
 function lakhs(value) {
     if (value === null || value === undefined) return "&ndash;";
@@ -134,47 +143,63 @@ function renderCheckIns(checkIns) {
         el.innerHTML = `<div class="hint-text"><i class="fa-solid fa-circle-info"></i> No check-ins yet.</div>`;
         return;
     }
-    const cell = (entry, bucket) => `<td class="num">${entry.balances[bucket] === undefined ? "&ndash;" : lakhs(entry.balances[bucket])}</td>`;
-    let html = `<table><thead><tr><th>Date</th><th class="num">Cash</th><th class="num">Equity</th><th class="num">Debt</th><th class="num">Loan outstanding</th><th>Note</th><th></th></tr></thead><tbody>`;
+    const loans = loanViews().map((v) => v.loan);
+    const cell = (entry, key) => `<td class="num">${entry.balances[key] === undefined ? "&ndash;" : lakhs(entry.balances[key])}</td>`;
+    const loanHeads = loans.map((l) => `<th class="num">${escapeHtml(l.name)} outstanding</th>`).join("");
+    let html = `<table><thead><tr><th>Date</th><th class="num">Cash</th><th class="num">Equity</th><th class="num">Debt</th>${loanHeads}<th>Note</th><th></th></tr></thead><tbody>`;
     checkIns.forEach((entry) => {
-        html += `<tr><td>${escapeHtml(entry.as_of)}</td>${cell(entry, "cash")}${cell(entry, "equity")}${cell(entry, "debt")}${cell(entry, "loan")}<td>${escapeHtml(entry.note || "")}</td><td>${actionButtons("edit-checkin", "delete-checkin", escapeHtml(entry.as_of))}</td></tr>`;
+        const loanCells = loans.map((l) => cell(entry, `loan_${l.id}`)).join("");
+        html += `<tr><td>${escapeHtml(entry.as_of)}</td>${cell(entry, "cash")}${cell(entry, "equity")}${cell(entry, "debt")}${loanCells}<td>${escapeHtml(entry.note || "")}</td><td>${actionButtons("edit-checkin", "delete-checkin", escapeHtml(entry.as_of))}</td></tr>`;
     });
     el.innerHTML = html + "</tbody></table>";
 }
 
 function openCheckIn(group) {
     const editing = !!group;
-    const hasLoan = (lastLoan && lastLoan.loan) || (editing && group.balances.loan !== undefined);
-    const value = (bucket) => (editing ? group.balances[bucket] : undefined);
+    const loans = loanViews().map((v) => v.loan);
+    const value = (key) => (editing ? group.balances[key] : undefined);
     const fields = [
         { name: "as_of", label: "Date", type: "date", value: editing ? group.as_of : todayLocal(), max: todayLocal(), required: true },
         { name: "cash_lakhs", label: "Cash (Lakhs)", type: "number", value: value("cash") },
         { name: "equity_lakhs", label: "Equity portfolio (Lakhs)", type: "number", value: value("equity") },
         { name: "debt_lakhs", label: "Debt portfolio (Lakhs)", type: "number", value: value("debt") },
     ];
-    if (hasLoan) fields.push({ name: "loan_outstanding_lakhs", label: "Loan outstanding (Lakhs)", type: "number", value: value("loan") });
+    loans.forEach((loan) => {
+        fields.push({ name: `loan_${loan.id}`, label: `${loan.name} outstanding (Lakhs)`, type: "number", value: value(`loan_${loan.id}`) });
+    });
     fields.push({ name: "note", label: "Note (optional)", type: "text", value: editing ? group.note : undefined });
+
+    // The form has one field per loan; the API takes them as {loan id: balance}.
+    const payload = (v) => {
+        const body = { ...v, loan_balances: {} };
+        loans.forEach((loan) => {
+            const key = `loan_${loan.id}`;
+            if (body[key] !== null && body[key] !== undefined) body.loan_balances[loan.id] = body[key];
+            delete body[key];
+        });
+        return body;
+    };
     openModal({
         title: editing ? "Edit check-in" : "New check-in",
         intro: editing ? "Clear a balance to remove it from this check-in." : "Fill only the balances you know today.",
         fields,
         submitLabel: editing ? "Save changes" : "Save check-in",
         onSubmit: (v) => (editing
-            ? api("PUT", "/api/journal/check-in", { ...v, ids: group.ids })
-            : api("POST", "/api/journal/check-in", v)),
+            ? api("PUT", "/api/journal/check-in", { ...payload(v), ids: group.ids })
+            : api("POST", "/api/journal/check-in", payload(v))),
     });
 }
 
-// ------------------------------------------------------------------ loan ----
+// ----------------------------------------------------------------- loans ----
 
-// What the projection is doing about the loan while none is set up, built only
-// from what the assumptions actually say (their values come from /api/loan).
+// What the projection is doing about loans while none is set up, built only
+// from what the assumptions actually say (their values come from /api/loans).
 function legacyLoanNotice(legacy) {
     const emi = Number(legacy.annual_emi_lakhs);
     const outstanding = Number(legacy.loan_outstanding_lakhs);
     const endYear = Number(legacy.loan_end_year);
     const hasEndYear = Number.isFinite(endYear) && endYear > 0;
-    const pitch = "Set one up to track interest vs principal, prepayments and the payoff date.";
+    const pitch = "Add them to track interest vs principal, prepayments and the payoff date.";
     if (!(Number.isFinite(emi) && emi > 0)) return `No loan is set up. ${pitch}`;
     if (hasEndYear && endYear < new Date().getFullYear()) {
         return `No loan is set up, and the flat EMI in your assumptions ended in ${endYear}, so the projection has no loan payments. ${pitch}`;
@@ -185,28 +210,34 @@ function legacyLoanNotice(legacy) {
     return `${text}. ${pitch}`;
 }
 
-function renderLoanActions(view) {
+function renderLoanActions(data) {
     const el = document.getElementById("loanActions");
-    if (!view.loan) {
-        el.innerHTML = `<button class="btn" data-action="loan-setup"><i class="fa-solid fa-plus"></i> Set up loan</button>`;
-        return;
-    }
-    el.innerHTML = `
-        <button class="btn" data-action="prepayment"><i class="fa-solid fa-bolt"></i> Add prepayment</button>
-        <button class="btn btn-secondary" data-action="terms"><i class="fa-solid fa-percent"></i> Rate / EMI changed</button>
-        <button class="btn btn-secondary" data-action="statement"><i class="fa-solid fa-file-invoice"></i> Update from statement</button>`;
+    const first = !data.loans.length;
+    el.innerHTML = `<button class="btn" data-action="loan-setup"><i class="fa-solid fa-plus"></i> ${first ? "Set up loan" : "Add loan"}</button>`;
 }
 
-function renderLoan(view) {
-    renderLoanActions(view);
-    const el = document.getElementById("loanSection");
-    if (!view.loan) {
-        el.innerHTML = `<div class="notice info">${legacyLoanNotice(view.legacy || {})}</div>`;
-        return;
-    }
+function combinedStrip(combined) {
+    return `<div class="stat-grid">
+        <div class="stat"><div class="stat-label">All loans: balance now</div><div class="stat-value">${lakhs(combined.current_balance)} L</div></div>
+        <div class="stat"><div class="stat-label">All loans: monthly EMI</div><div class="stat-value">${lakhs(combined.monthly_emi)} L</div></div>
+        <div class="stat"><div class="stat-label">Last loan clears</div><div class="stat-value">${escapeHtml(combined.payoff_month || "never")}</div></div>
+        <div class="stat"><div class="stat-label">Interest still to pay</div><div class="stat-value">${lakhs(combined.total_interest_remaining)} L</div></div>
+    </div>`;
+}
+
+function loanBlock(view) {
+    const id = view.loan.id;
     const s = view.summary;
     const drifts = view.timeline.filter((row) => row.drift !== null && row.drift !== undefined && Math.abs(row.drift) >= 0.005);
-    let html = `
+    let html = `<div class="loan-block">
+        <div class="loan-header">
+            <h3><i class="fa-solid fa-landmark"></i> ${escapeHtml(view.loan.name)}</h3>
+            <div class="card-actions">
+                <button class="btn" data-action="prepayment" data-loan-id="${id}"><i class="fa-solid fa-bolt"></i> Add prepayment</button>
+                <button class="btn btn-secondary" data-action="terms" data-loan-id="${id}"><i class="fa-solid fa-percent"></i> Rate / EMI changed</button>
+                <button class="btn btn-secondary" data-action="statement" data-loan-id="${id}"><i class="fa-solid fa-file-invoice"></i> Update from statement</button>
+            </div>
+        </div>
         <div class="stat-grid">
             <div class="stat"><div class="stat-label">Balance now</div><div class="stat-value">${lakhs(s.current_balance)} L</div></div>
             <div class="stat"><div class="stat-label">Payoff</div><div class="stat-value">${escapeHtml(s.payoff_month || "never")}</div></div>
@@ -214,57 +245,76 @@ function renderLoan(view) {
             <div class="stat"><div class="stat-label">Interest still to pay</div><div class="stat-value">${lakhs(s.total_interest_remaining)} L</div></div>
             <div class="stat"><div class="stat-label">Prepayments planned/made ahead</div><div class="stat-value">${lakhs(s.total_prepaid_remaining)} L</div></div>
         </div>
-        <div class="hint-text"><i class="fa-solid fa-circle-info"></i> ${escapeHtml(view.loan.name)} &middot; balance last confirmed ${escapeHtml(s.balance_as_of)} (${lakhs(s.balance_observed)} L). Paying more than the EMI always goes to principal, so a prepayment shortens the tenure and the EMI stays as set.</div>`;
+        <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Balance last confirmed ${escapeHtml(s.balance_as_of)} (${lakhs(s.balance_observed)} L). Paying more than the EMI always goes to principal, so a prepayment shortens the tenure and the EMI stays as set.</div>`;
     drifts.forEach((row) => {
         html += `<div class="notice">${escapeHtml(row.month)}: the schedule computed ${lakhs(row.closing + row.drift)} L but your statement says ${lakhs(row.closing)} L (difference ${lakhs(row.drift)} L). A prepayment or rate change may be missing.</div>`;
     });
 
-    html += `<h3>Terms history</h3><div class="journal-table table-container"><table><thead><tr><th>Effective from</th><th class="num">Rate %</th><th class="num">EMI (L / month)</th><th>Note</th><th></th></tr></thead><tbody>`;
+    html += `<h4>Terms history</h4><div class="journal-table table-container"><table><thead><tr><th>Effective from</th><th class="num">Rate %</th><th class="num">EMI (L / month)</th><th>Note</th><th></th></tr></thead><tbody>`;
     view.terms.forEach((t) => {
-        const actions = actionButtons("edit-terms", "delete-terms", t.id, { canDelete: view.terms.length > 1, deleteTitle: view.terms.length > 1 ? "Delete" : "The loan's only terms record can't be deleted" });
+        const only = view.terms.length === 1;
+        const actions = actionButtons("edit-terms", "delete-terms", t.id, { canDelete: !only, deleteTitle: only ? "The loan's only terms record can't be deleted" : "Delete" });
         html += `<tr><td>${escapeHtml(t.effective_from)}</td><td class="num">${lakhs(t.annual_rate_pct)}</td><td class="num">${lakhs(t.emi_lakhs)}</td><td>${escapeHtml(t.note || "")}</td><td>${actions}</td></tr>`;
     });
     html += `</tbody></table></div>`;
 
-    const rows = scheduleExpanded ? view.schedule : view.schedule.slice(0, SCHEDULE_PREVIEW_ROWS);
-    html += `<h3>Schedule</h3><div class="hint-text" style="margin-top:0"><i class="fa-solid fa-circle-info"></i> Computed from the terms, balances and prepayments above - change those to change it.</div><div class="journal-table table-container"><table><thead><tr><th>Month</th><th class="num">Opening</th><th class="num">Interest</th><th class="num">Principal</th><th class="num">EMI</th><th class="num">Prepaid</th><th class="num">Closing</th></tr></thead><tbody>`;
+    const expanded = expandedSchedules.has(id);
+    const rows = expanded ? view.schedule : view.schedule.slice(0, SCHEDULE_PREVIEW_ROWS);
+    html += `<h4>Schedule</h4><div class="hint-text" style="margin-top:0"><i class="fa-solid fa-circle-info"></i> Computed from the terms, balances and prepayments - change those to change it.</div><div class="journal-table table-container"><table><thead><tr><th>Month</th><th class="num">Opening</th><th class="num">Interest</th><th class="num">Principal</th><th class="num">EMI</th><th class="num">Prepaid</th><th class="num">Closing</th></tr></thead><tbody>`;
     rows.forEach((r) => {
         html += `<tr><td>${escapeHtml(r.month)}</td><td class="num">${lakhs(r.opening)}</td><td class="num">${lakhs(r.interest)}</td><td class="num">${lakhs(r.principal)}</td><td class="num">${lakhs(r.emi_paid)}</td><td class="num">${r.prepayment ? lakhs(r.prepayment) : "&ndash;"}</td><td class="num">${lakhs(r.closing)}</td></tr>`;
     });
     html += `</tbody></table></div>`;
     if (view.schedule.length > SCHEDULE_PREVIEW_ROWS) {
-        html += `<div class="card-actions" style="justify-content:flex-start;margin-top:8px"><button class="btn btn-secondary" data-action="toggle-schedule">${scheduleExpanded ? "Show fewer months" : `Show all ${view.schedule.length} months`}</button></div>`;
+        html += `<div class="card-actions" style="justify-content:flex-start;margin-top:8px"><button class="btn btn-secondary" data-action="toggle-schedule" data-loan-id="${id}">${expanded ? "Show fewer months" : `Show all ${view.schedule.length} months`}</button></div>`;
     }
+    return html + `</div>`;
+}
+
+function renderLoans(data) {
+    renderLoanActions(data);
+    const el = document.getElementById("loanSection");
+    if (!data.loans.length) {
+        el.innerHTML = `<div class="notice info">${legacyLoanNotice(data.legacy || {})}</div>`;
+        return;
+    }
+    let html = "";
+    if (data.combined) html += combinedStrip(data.combined);
+    html += data.loans.map(loanBlock).join("");
     el.innerHTML = html;
 }
 
-function currentTerms() {
-    const terms = (lastLoan && lastLoan.terms) || [];
+function currentTerms(view) {
+    const terms = (view && view.terms) || [];
     return terms.length ? terms[terms.length - 1] : {};
 }
 
 function openLoanSetup() {
-    const legacy = (lastLoan && lastLoan.legacy) || {};
-    const monthlyEmi = legacy.annual_emi_lakhs ? Math.round((legacy.annual_emi_lakhs / 12) * 10000) / 10000 : null;
+    const existing = loanViews().length;
+    const legacy = (lastLoans && lastLoans.legacy) || {};
+    // The flat-EMI assumptions describe the loans in total, so they only seed the first loan.
+    const seed = existing === 0;
+    const monthlyEmi = seed && legacy.annual_emi_lakhs ? Math.round((legacy.annual_emi_lakhs / 12) * 10000) / 10000 : null;
     openModal({
-        title: "Set up loan",
+        title: existing ? "Add another loan" : "Set up loan",
         intro: "Enter the balance your bank shows today, the annual interest rate, and either the monthly EMI or the months remaining (the other is worked out).",
         fields: [
-            { name: "name", label: "Name", type: "text", value: "Home loan", required: true },
-            { name: "outstanding_lakhs", label: "Outstanding principal (Lakhs)", type: "number", value: legacy.loan_outstanding_lakhs, required: true },
+            { name: "name", label: "Name", type: "text", value: existing ? `Loan ${existing + 1}` : "Home loan", required: true },
+            { name: "outstanding_lakhs", label: "Outstanding principal (Lakhs)", type: "number", value: seed ? legacy.loan_outstanding_lakhs : undefined, required: true },
             { name: "as_of", label: "As of", type: "date", value: todayLocal(), max: todayLocal(), required: true },
             { name: "annual_rate_pct", label: "Annual interest rate (%)", type: "number", required: true },
             { name: "emi_lakhs", label: "Monthly EMI (Lakhs)", type: "number", step: "0.0001", value: monthlyEmi },
             { name: "remaining_months", label: "Or months remaining", type: "number", step: "1" },
         ],
         submitLabel: "Create loan",
-        onSubmit: (v) => api("POST", "/api/loan", v),
+        onSubmit: (v) => api("POST", "/api/loans", v),
     });
 }
 
-function openTermsChange(existing) {
+function openTermsChange(loanId, existing) {
     const editing = !!existing;
-    const now = editing ? existing : currentTerms();
+    const view = loanViews().find((v) => v.loan.id === Number(loanId));
+    const now = editing ? existing : currentTerms(view);
     const fields = [
         { name: "effective_from", label: "Effective from", type: "date", value: editing ? existing.effective_from : todayLocal(), required: true },
         { name: "annual_rate_pct", label: "Annual interest rate (%)", type: "number", value: now.annual_rate_pct, required: true },
@@ -273,32 +323,32 @@ function openTermsChange(existing) {
     if (!editing) fields.push({ name: "statement_balance_lakhs", label: "Statement balance on that date (optional)", type: "number" });
     fields.push({ name: "note", label: "Note (optional)", type: "text", value: editing ? existing.note : undefined });
     openModal({
-        title: editing ? "Edit rate / EMI" : "Rate / EMI changed",
+        title: `${editing ? "Edit rate / EMI" : "Rate / EMI changed"} - ${loanName(loanId)}`,
         intro: "Applies from the month of the effective date. This does not change the recorded balance"
             + (editing ? "." : " unless you also enter the statement balance."),
         fields,
         submitLabel: editing ? "Save changes" : "Save",
-        onSubmit: (v) => (editing ? api("PUT", `/api/loan/terms/${existing.id}`, v) : api("POST", "/api/loan/terms", v)),
+        onSubmit: (v) => (editing ? api("PUT", `/api/loan-terms/${existing.id}`, v) : api("POST", `/api/loans/${loanId}/terms`, v)),
     });
 }
 
-function openStatement() {
+function openStatement(loanId) {
     openModal({
-        title: "Update from statement",
+        title: `Update from statement - ${loanName(loanId)}`,
         intro: "The balance your bank shows. The schedule restarts from it, and any difference from the computed balance is shown.",
         fields: [
             { name: "as_of", label: "As of", type: "date", value: todayLocal(), max: todayLocal(), required: true },
             { name: "outstanding_lakhs", label: "Outstanding principal (Lakhs)", type: "number", required: true },
             { name: "note", label: "Note (optional)", type: "text" },
         ],
-        onSubmit: (v) => api("POST", "/api/loan/statement", v),
+        onSubmit: (v) => api("POST", `/api/loans/${loanId}/statement`, v),
     });
 }
 
-function openPrepayment(existing) {
+function openPrepayment(loanId, existing) {
     const editing = !!existing;
     openModal({
-        title: editing ? "Edit prepayment" : "Add loan prepayment",
+        title: `${editing ? "Edit prepayment" : "Add prepayment"} - ${loanName(loanId)}`,
         intro: "Paid from your cash. It reduces the principal and shortens the tenure; the EMI stays the same.",
         fields: [
             { name: "entry_date", label: "Date", type: "date", value: editing ? existing.entry_date : todayLocal(), max: todayLocal(), required: true },
@@ -309,14 +359,14 @@ function openPrepayment(existing) {
         // The what-if preview would count an edited prepayment twice, so it is for new ones only.
         onChange: editing ? undefined : async (v) => {
             if (!v.entry_date || !v.amount_lakhs) return "";
-            const p = await api("POST", "/api/loan/prepayment-preview", { entry_date: v.entry_date, amount_lakhs: v.amount_lakhs });
+            const p = await api("POST", `/api/loans/${loanId}/prepayment-preview`, { entry_date: v.entry_date, amount_lakhs: v.amount_lakhs });
             if (!p.payoff_month_after) return "This would not clear the loan.";
             const months = p.months_saved === null ? "" : `${p.months_saved} month(s) earlier, `;
             return `Loan clears ${p.payoff_month_after} instead of ${p.payoff_month_before}: ${months}saving about ${lakhs(p.interest_saved)} L interest.`;
         },
         onSubmit: (v) => (editing
             ? api("PUT", `/api/journal/entries/${existing.id}`, { entry_date: v.entry_date, amount_lakhs: v.amount_lakhs, note: v.note })
-            : api("POST", "/api/loan/prepayments", { entry_date: v.entry_date, amount_lakhs: v.amount_lakhs, note: v.note })),
+            : api("POST", `/api/loans/${loanId}/prepayments`, { entry_date: v.entry_date, amount_lakhs: v.amount_lakhs, note: v.note })),
     });
 }
 
@@ -333,6 +383,7 @@ function entryDetail(entry) {
     if (entry.kind === "invest" || entry.kind === "withdraw") {
         return `${escapeHtml(entry.from_bucket)} \u2192 ${escapeHtml(entry.to_bucket)}`;
     }
+    if (entry.kind === "prepayment") return `&middot; ${escapeHtml(loanName(entry.ref_id))}`;
     return "";
 }
 
@@ -400,7 +451,7 @@ function openTransfer(kind, existing) {
 
 function openEntryEditor(entry) {
     if (entry.kind === "income") openIncome(entry);
-    else if (entry.kind === "prepayment") openPrepayment(entry);
+    else if (entry.kind === "prepayment") openPrepayment(entry.ref_id, entry);
     else openTransfer(entry.kind, entry);
 }
 
@@ -412,16 +463,22 @@ document.addEventListener("click", async (e) => {
     const id = target.dataset.id;
     const entry = () => lastJournal.entries.find((x) => String(x.id) === id);
     const group = () => lastJournal.check_ins.find((x) => x.as_of === id);
-    const terms = () => lastLoan.terms.find((x) => String(x.id) === id);
+    const loanId = target.dataset.loanId;
+    const terms = () => loanViews().flatMap((v) => v.terms).find((x) => String(x.id) === id);
     try {
         switch (target.dataset.action) {
             case "loan-setup": openLoanSetup(); break;
-            case "prepayment": openPrepayment(); break;
-            case "terms": openTermsChange(); break;
-            case "statement": openStatement(); break;
-            case "toggle-schedule": scheduleExpanded = !scheduleExpanded; renderLoan(lastLoan); break;
+            case "prepayment": openPrepayment(loanId); break;
+            case "terms": openTermsChange(loanId); break;
+            case "statement": openStatement(loanId); break;
+            case "toggle-schedule": {
+                const key = Number(loanId);
+                if (expandedSchedules.has(key)) expandedSchedules.delete(key); else expandedSchedules.add(key);
+                renderLoans(lastLoans);
+                break;
+            }
             case "edit-checkin": openCheckIn(group()); break;
-            case "edit-terms": openTermsChange(terms()); break;
+            case "edit-terms": { const record = terms(); openTermsChange(record.loan_id, record); break; }
             case "edit-entry": openEntryEditor(entry()); break;
             case "delete-checkin":
                 if (confirm(`Delete the check-in of ${id}? It stays in the history but no longer counts.`)) {
@@ -429,7 +486,7 @@ document.addEventListener("click", async (e) => {
                 }
                 break;
             case "delete-terms":
-                if (confirm("Delete this rate / EMI record?")) { await api("POST", `/api/loan/terms/${id}/void`); await load(); }
+                if (confirm("Delete this rate / EMI record?")) { await api("POST", `/api/loan-terms/${id}/void`); await load(); }
                 break;
             case "delete-entry":
                 if (confirm("Delete this entry? It stays in the history but no longer counts.")) {
@@ -451,11 +508,11 @@ document.getElementById("investBtn").addEventListener("click", () => openTransfe
 document.getElementById("withdrawBtn").addEventListener("click", () => openTransfer("withdraw"));
 
 async function load() {
-    const [journalData, loanData] = await Promise.all([api("GET", "/api/journal"), api("GET", "/api/loan")]);
+    const [journalData, loanData] = await Promise.all([api("GET", "/api/journal"), api("GET", "/api/loans")]);
     lastJournal = journalData;
-    lastLoan = loanData;
+    lastLoans = loanData;
     renderCheckIns(journalData.check_ins);
-    renderLoan(loanData);
+    renderLoans(loanData);
     renderEntries(journalData.entries);
 }
 

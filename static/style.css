@@ -920,3 +920,25 @@ td i {
 .modal-note { font-size: 0.82rem; color: var(--accent-secondary); min-height: 1.2em; margin-bottom: 10px; }
 .modal-error { font-size: 0.82rem; color: #ff6b6b; min-height: 1.2em; margin-bottom: 8px; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* --- Journal: one block per loan --- */
+.loan-block {
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border-color);
+}
+.loan-block:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+.loan-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.loan-header h3 { margin: 0; }
+.loan-block h4 {
+    margin: 18px 0 8px;
+    font-size: 0.95rem;
+    color: var(--text-main);
+}
