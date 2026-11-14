@@ -6,12 +6,11 @@ const PROJECTION_END_YEAR = 2070;
 
 // Every assumption field that represents a calendar year, rendered as a
 // <select> dropdown instead of a free-text number input so the user can't
-// key in an out-of-range or nonsensical year. extraIncomeYear is handled
-// separately since it's not part of ASSUMPTION_FIELDS.
+// key in an out-of-range or nonsensical year.
 const YEAR_SELECT_IDS = [
     "kids_expense_start_year", "kids_expense_end_year",
     "parents_expense_start_year", "parents_expense_end_year",
-    "loan_end_year", "retirement_year", "extraIncomeYear",
+    "loan_end_year", "retirement_year",
 ];
 
 function populateYearSelect(selectId, startYear, endYear) {
@@ -61,6 +60,12 @@ const COLUMN_DEFS = [
     { key: "emi_amount", label: "EMI Amt", group: "expense" },
     { key: "total_expense", label: "Total Exp.", group: "expense" },
 
+    // Present only once a loan is set up in the Journal (see renderProjectionTable).
+    { key: "loan_interest", label: "Loan Interest", group: "loan", optional: true },
+    { key: "loan_principal", label: "Loan Principal", group: "loan", optional: true },
+    { key: "loan_prepayment", label: "Prepaid", group: "loan", optional: true },
+    { key: "loan_balance_end", label: "Loan Balance", group: "loan", optional: true },
+
     { key: "rental_income", label: "Rental Inc.", group: "income" },
     { key: "salary", label: "Salary", group: "income" },
     { key: "extra_income", label: "Extra Inc.", group: "income" },
@@ -85,6 +90,7 @@ const COLUMN_DEFS = [
 
 const GROUP_LABELS = {
     expense: "Expense",
+    loan: "Loan",
     income: "Income",
     cashflow: "Cash Flow",
     equity: "Equity",
@@ -112,33 +118,7 @@ async function loadAssumptionsIntoForm() {
             input.value = data.assumptions[field];
         }
     });
-    renderExtraIncomeList(data.extra_income || []);
     return data.assumptions;
-}
-
-function renderExtraIncomeList(entries) {
-    const container = document.getElementById("extraIncomeList");
-    if (!entries.length) {
-        container.innerHTML = `<div class="hint-text"><i class="fa-solid fa-circle-info"></i> No manual entries yet.</div>`;
-        return;
-    }
-    let html = `<table><thead><tr><th>Year</th><th>Amount (Lakhs)</th><th>Note</th><th></th></tr></thead><tbody>`;
-    entries.forEach((e) => {
-        html += `<tr>
-            <td>${e.year}</td>
-            <td>${fmt(e.amount_lakhs)}</td>
-            <td>${escapeHtml(e.note)}</td>
-            <td><button class="delete-row-btn" data-year="${e.year}" title="Delete"><i class="fa-solid fa-trash"></i></button></td>
-        </tr>`;
-    });
-    html += `</tbody></table>`;
-    container.innerHTML = html;
-    container.querySelectorAll(".delete-row-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-            await fetch(`/api/fire-projection/extra-income/${btn.dataset.year}`, { method: "DELETE" });
-            await refreshAll();
-        });
-    });
 }
 
 function milestoneYearsFrom(assumptions) {
@@ -153,13 +133,13 @@ function milestoneYearsFrom(assumptions) {
     ]);
 }
 
-function buildGroupHeaderRow() {
+function buildGroupHeaderRow(columns) {
     let html = "<tr class=\"group-header-row\">";
     let i = 0;
-    while (i < COLUMN_DEFS.length) {
-        const group = COLUMN_DEFS[i].group;
+    while (i < columns.length) {
+        const group = columns[i].group;
         let span = 1;
-        while (i + span < COLUMN_DEFS.length && COLUMN_DEFS[i + span].group === group) {
+        while (i + span < columns.length && columns[i + span].group === group) {
             span++;
         }
         const groupClass = group ? `col-group-${group}` : "";
@@ -192,6 +172,10 @@ function yearBadges(row) {
     } else if (row.expense_source === "blended") {
         html += `<span class="source-badge source-blended">Blended</span>`;
     }
+    if (row.anchored) {
+        const when = Object.entries(row.anchored).map(([bucket, date]) => `${bucket}: ${date}`).join(", ");
+        html += `<span class="source-badge source-checkin" title="Start balances for this year are implied by your check-in (${escapeHtml(when)}).">Check-in</span>`;
+    }
     if (row.no_data_months > 0) {
         html += `<span class="source-badge source-gap" title="Closed months with no recorded expenses - the forecast was used. Sync or import them.">${row.no_data_months} gap${row.no_data_months > 1 ? "s" : ""}</span>`;
     }
@@ -210,7 +194,7 @@ function monthCellValue(month, colKey) {
     }
 }
 
-function renderMonthRows(row) {
+function renderMonthRows(row, columns) {
     let html = "";
     row.months.forEach((month) => {
         const status = MONTH_STATUS[month.status] || { label: escapeHtml(month.status), cls: "" };
@@ -219,7 +203,7 @@ function renderMonthRows(row) {
             ? ` title="Recorded spend ${month.actual_spend.toFixed(2)} L${month.status === "actual" ? " + assumed EMI" : " so far this month"}"`
             : "";
         html += `<tr class="month-row ${status.cls}${expandedYears.has(row.year) ? "" : " hidden"}" data-month-of="${row.year}"${spendNote}>`;
-        COLUMN_DEFS.forEach((col) => {
+        columns.forEach((col) => {
             const groupClass = col.group ? `col-group-${col.group}` : "";
             if (col.key === "year") {
                 html += `<td class="${groupClass}">${MONTH_NAMES[monthIndex]} &middot; ${status.label}</td>`;
@@ -240,10 +224,11 @@ function renderProjectionTable(rows, milestones) {
         const current = rows.find((row) => row.expense_source === "blended");
         expandedYears = new Set(current ? [current.year] : []);
     }
+    const columns = COLUMN_DEFS.filter((col) => !col.optional || rows.some((row) => row[col.key] !== undefined));
     let html = "<table><thead>";
-    html += buildGroupHeaderRow();
+    html += buildGroupHeaderRow(columns);
     html += "<tr>";
-    COLUMN_DEFS.forEach((col) => {
+    columns.forEach((col) => {
         const groupClass = col.group ? `col-group-${col.group}` : "";
         html += `<th class="${groupClass}">${col.label}</th>`;
     });
@@ -252,17 +237,21 @@ function renderProjectionTable(rows, milestones) {
         const rowClass = milestones.has(row.year) ? "milestone-row" : "";
         const hasMonths = Array.isArray(row.months);
         html += `<tr class="${rowClass}">`;
-        COLUMN_DEFS.forEach((col) => {
+        columns.forEach((col) => {
             const groupClass = col.group ? `col-group-${col.group}` : "";
             if (col.key === "year" && hasMonths) {
                 const open = expandedYears.has(row.year);
                 html += `<td class="${groupClass} year-toggle${open ? " expanded" : ""}" data-year="${row.year}"><span class="chevron">&#9656;</span>${row.year}${yearBadges(row)}</td>`;
                 return;
             }
+            if (col.key === "year") {
+                html += `<td class="${groupClass}">${row.year}${yearBadges(row)}</td>`;
+                return;
+            }
             html += `<td class="${groupClass}">${fmt(row[col.key], col.plain)}</td>`;
         });
         html += "</tr>";
-        if (hasMonths) html += renderMonthRows(row);
+        if (hasMonths) html += renderMonthRows(row, columns);
     });
     html += "</tbody></table>";
     container.innerHTML = html;
@@ -429,20 +418,6 @@ document.getElementById("assumptionsForm").addEventListener("submit", async (e) 
     } finally {
         setTimeout(() => { statusEl.textContent = ""; }, 4000);
     }
-});
-
-document.getElementById("extraIncomeForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const year = parseInt(document.getElementById("extraIncomeYear").value, 10);
-    const amount_lakhs = parseFloat(document.getElementById("extraIncomeAmount").value);
-    const note = document.getElementById("extraIncomeNote").value || null;
-    await fetch("/api/fire-projection/extra-income", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ year, amount_lakhs, note }),
-    });
-    document.getElementById("extraIncomeForm").reset();
-    await refreshAll();
 });
 
 function initDrawer() {

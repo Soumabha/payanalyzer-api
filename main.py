@@ -1,8 +1,8 @@
 import os
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from splitwise import Splitwise
 from splitwise.exception import SplitwiseBaseException
@@ -11,15 +11,9 @@ from dotenv import load_dotenv
 from splitwise_data import create_schema, upsert_expense, get_latest_expense_update, get_db_connection, SqliteExpenseStore
 from actual_spend import load_actual_monthly_spend
 from projections import run_projection, PROJECTION_START_YEAR, PROJECTION_END_YEAR
-from projection_data import (
-    create_projection_schema,
-    get_assumptions,
-    save_assumptions,
-    get_extra_income,
-    get_extra_income_by_year,
-    add_extra_income,
-    delete_extra_income,
-)
+from projection_data import create_projection_schema, get_assumptions, save_assumptions
+import journal
+from journal_data import SqliteJournalStore, create_journal_schema
 from datetime import datetime, timedelta
 from collections import defaultdict
 import calendar
@@ -79,10 +73,73 @@ class ExtraIncomeEntry(BaseModel):
     note: Optional[str] = None
 
 
+class LoanSetup(BaseModel):
+    name: str = "Home loan"
+    outstanding_lakhs: float
+    as_of: str
+    annual_rate_pct: float
+    emi_lakhs: Optional[float] = None
+    remaining_months: Optional[int] = None
+
+
+class LoanTermsChange(BaseModel):
+    effective_from: str
+    annual_rate_pct: float
+    emi_lakhs: float
+    note: Optional[str] = None
+    statement_balance_lakhs: Optional[float] = None
+
+
+class PrepaymentIn(BaseModel):
+    entry_date: str
+    amount_lakhs: float
+    note: Optional[str] = None
+
+
+class LoanStatement(BaseModel):
+    as_of: str
+    outstanding_lakhs: float
+    note: Optional[str] = None
+
+
+class CheckIn(BaseModel):
+    as_of: str
+    cash_lakhs: Optional[float] = None
+    equity_lakhs: Optional[float] = None
+    debt_lakhs: Optional[float] = None
+    loan_outstanding_lakhs: Optional[float] = None
+    note: Optional[str] = None
+
+
+class IncomeIn(BaseModel):
+    entry_date: str
+    amount_lakhs: float
+    note: Optional[str] = None
+    status: str = "planned"
+
+
+class TransferIn(BaseModel):
+    kind: str
+    entry_date: str
+    amount_lakhs: float
+    bucket: str
+    note: Optional[str] = None
+
+
+class StatusIn(BaseModel):
+    status: str
+
+
 @app.on_event("startup")
 def startup_event():
     create_schema()
     create_projection_schema()
+    create_journal_schema()
+    store = SqliteJournalStore()
+    try:
+        journal.migrate_legacy_extra_income(store, _now())
+    finally:
+        store.close()
     sync_splitwise_expenses()
 
 
@@ -272,13 +329,37 @@ def get_categories():
     conn.close()
     return {"categories": categories}
 
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def get_journal_store():
+    store = SqliteJournalStore()
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+@app.exception_handler(journal.JournalError)
+def journal_error_handler(request: Request, exc: journal.JournalError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
 @app.get("/projection")
 def projection_page():
     return FileResponse("static/projection.html")
 
+
+@app.get("/journal")
+def journal_page():
+    return FileResponse("static/journal.html")
+
+
 @app.get("/api/fire-projection/assumptions")
-def get_fire_assumptions():
-    return {"assumptions": get_assumptions(), "extra_income": get_extra_income()}
+def get_fire_assumptions(store=Depends(get_journal_store)):
+    return {"assumptions": get_assumptions(), "extra_income": journal.extra_income_by_year_list(store)}
+
 
 @app.put("/api/fire-projection/assumptions")
 def update_fire_assumptions(payload: AssumptionsUpdate):
@@ -289,28 +370,34 @@ def update_fire_assumptions(payload: AssumptionsUpdate):
         raise HTTPException(status_code=400, detail=str(e))
     return {"assumptions": updated}
 
+
+# Pre-journal extra-income endpoints, kept as thin wrappers over the ledger.
 @app.get("/api/fire-projection/extra-income")
-def list_extra_income():
-    return get_extra_income()
+def list_extra_income(store=Depends(get_journal_store)):
+    return journal.extra_income_by_year_list(store)
+
 
 @app.post("/api/fire-projection/extra-income")
-def create_extra_income(entry: ExtraIncomeEntry):
-    add_extra_income(entry.year, entry.amount_lakhs, entry.note)
-    return get_extra_income()
+def create_extra_income(entry: ExtraIncomeEntry, store=Depends(get_journal_store)):
+    journal.set_extra_income_for_year(store, _now(), entry.year, entry.amount_lakhs, entry.note)
+    return journal.extra_income_by_year_list(store)
+
 
 @app.delete("/api/fire-projection/extra-income/{year}")
-def remove_extra_income(year: int):
-    delete_extra_income(year)
-    return get_extra_income()
+def remove_extra_income(year: int, store=Depends(get_journal_store)):
+    journal.remove_extra_income_for_year(store, _now(), year)
+    return journal.extra_income_by_year_list(store)
+
 
 @app.get("/api/fire-projection")
 def get_fire_projection(
     start_year: int = Query(PROJECTION_START_YEAR),
     end_year: int = Query(PROJECTION_END_YEAR),
     actuals: bool = Query(False),
+    journal_store=Depends(get_journal_store),
 ):
     assumptions = get_assumptions()
-    extra_income = get_extra_income_by_year()
+    inputs = journal.projection_inputs(journal_store, start_year, end_year, include_actuals=actuals)
     actual_monthly_spend = None
     if actuals:
         store = SqliteExpenseStore()
@@ -320,11 +407,106 @@ def get_fire_projection(
             store.close()
     try:
         return run_projection(
-            assumptions, extra_income, start_year=start_year, end_year=end_year,
+            assumptions, inputs["extra_income_by_year"], start_year=start_year, end_year=end_year,
             actual_monthly_spend=actual_monthly_spend,
+            loan_timeline=inputs["loan_timeline"],
+            observations=inputs["observations"],
+            transfers=inputs["transfers"],
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# --- Journal: loan, check-ins, income, transfers ---------------------------
+
+@app.get("/api/loan")
+def get_loan_view(store=Depends(get_journal_store)):
+    view = journal.loan_view(store, datetime.now().date(), PROJECTION_START_YEAR, PROJECTION_END_YEAR)
+    view["legacy"] = {
+        key: value for key, value in get_assumptions().items()
+        if key in ("loan_outstanding_lakhs", "annual_emi_lakhs", "loan_end_year")
+    }
+    return view
+
+
+@app.post("/api/loan")
+def create_loan(payload: LoanSetup, store=Depends(get_journal_store)):
+    journal.setup_loan(store, _now(), **payload.dict())
+    return get_loan_view(store)
+
+
+@app.post("/api/loan/terms")
+def create_loan_terms(payload: LoanTermsChange, store=Depends(get_journal_store)):
+    journal.add_loan_terms(store, _now(), **payload.dict())
+    return get_loan_view(store)
+
+
+@app.post("/api/loan/terms/{terms_id}/void")
+def void_loan_terms(terms_id: int, store=Depends(get_journal_store)):
+    journal.void_loan_terms(store, _now(), terms_id)
+    return get_loan_view(store)
+
+
+@app.post("/api/loan/prepayments")
+def create_prepayment(payload: PrepaymentIn, store=Depends(get_journal_store)):
+    journal.add_prepayment(store, _now(), **payload.dict())
+    return get_loan_view(store)
+
+
+@app.post("/api/loan/prepayment-preview")
+def preview_prepayment(payload: PrepaymentIn, store=Depends(get_journal_store)):
+    return journal.prepayment_preview(store, entry_date=payload.entry_date, amount_lakhs=payload.amount_lakhs)
+
+
+@app.post("/api/loan/statement")
+def create_loan_statement(payload: LoanStatement, store=Depends(get_journal_store)):
+    journal.add_loan_statement(store, _now(), **payload.dict())
+    return get_loan_view(store)
+
+
+@app.get("/api/journal")
+def get_journal(store=Depends(get_journal_store)):
+    return {
+        "entries": journal.journal_entries(store, datetime.now().date()),
+        "check_ins": journal.check_in_history(store),
+    }
+
+
+@app.post("/api/journal/check-in")
+def create_check_in(payload: CheckIn, store=Depends(get_journal_store)):
+    journal.record_check_in(store, _now(), **payload.dict())
+    return get_journal(store)
+
+
+@app.post("/api/journal/income")
+def create_income(payload: IncomeIn, store=Depends(get_journal_store)):
+    journal.add_income(store, _now(), **payload.dict())
+    return get_journal(store)
+
+
+@app.post("/api/journal/transfer")
+def create_transfer(payload: TransferIn, store=Depends(get_journal_store)):
+    journal.add_transfer(store, _now(), **payload.dict())
+    return get_journal(store)
+
+
+@app.post("/api/journal/entries/{entry_id}/status")
+def set_income_status(entry_id: int, payload: StatusIn, store=Depends(get_journal_store)):
+    journal.confirm_income(store, entry_id, payload.status)
+    return get_journal(store)
+
+
+@app.post("/api/journal/entries/{entry_id}/void")
+def void_journal_entry(entry_id: int, store=Depends(get_journal_store)):
+    journal.void_entry(store, _now(), entry_id)
+    return get_journal(store)
+
+
+@app.post("/api/journal/observations/{observation_id}/void")
+def void_journal_observation(observation_id: int, store=Depends(get_journal_store)):
+    journal.void_observation(store, _now(), observation_id)
+    return get_journal(store)
+
 
 @app.get("/api/top-recurring-expenses")
 def get_top_recurring_expenses(

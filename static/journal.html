@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Journal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="sticky-header">
+        <div class="header-content">
+            <h1><i class="fa-solid fa-book"></i> Journal</h1>
+            <nav class="page-nav">
+                <a href="/" class="nav-link"><i class="fa-solid fa-chart-pie"></i> Expenses</a>
+                <a href="/projection" class="nav-link"><i class="fa-solid fa-seedling"></i> Wealth Projection</a>
+                <a href="/journal" class="nav-link active"><i class="fa-solid fa-book"></i> Journal</a>
+            </nav>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="dashboard-grid">
+
+            <div class="card" style="grid-column: span 12;">
+                <section>
+                    <h2><i class="fa-solid fa-camera"></i> Check-ins</h2>
+                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Record your real balances on a date. The projection restarts from your latest check-in each year; earlier rows are not rewritten.</div>
+                    <div class="section-actions">
+                        <button class="btn" id="newCheckInBtn"><i class="fa-solid fa-plus"></i> New check-in</button>
+                    </div>
+                    <div id="checkIns" class="table-container journal-table"></div>
+                </section>
+            </div>
+
+            <div class="card" style="grid-column: span 12;">
+                <section>
+                    <h2><i class="fa-solid fa-landmark"></i> Loan</h2>
+                    <div id="loanSection"></div>
+                </section>
+            </div>
+
+            <div class="card" style="grid-column: span 12;">
+                <section>
+                    <h2><i class="fa-solid fa-list"></i> Entries</h2>
+                    <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Extra income and moves between cash and your investments. Planned entries count towards the projection; once their date passes you'll be asked whether they happened.</div>
+                    <div class="section-actions">
+                        <button class="btn" id="addIncomeBtn"><i class="fa-solid fa-plus"></i> Extra income</button>
+                        <button class="btn btn-secondary" id="investBtn"><i class="fa-solid fa-arrow-trend-up"></i> Invest from cash</button>
+                        <button class="btn btn-secondary" id="withdrawBtn"><i class="fa-solid fa-arrow-down"></i> Withdraw to cash</button>
+                    </div>
+                    <div id="entries" class="table-container journal-table"></div>
+                </section>
+            </div>
+
+        </div>
+    </div>
+
+    <div id="modalOverlay" class="modal-overlay">
+        <div class="modal" id="modal"></div>
+    </div>
+
+    <script src="/static/html-utils.js"></script>
+    <script src="/static/journal.js"></script>
+</body>
+</html>

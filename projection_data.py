@@ -1,7 +1,8 @@
 """
-Persistence layer for the FIRE / wealth projection's assumptions and manual
-extra-income entries. Follows the same sqlite3 + row_factory pattern as
-splitwise_data.py.
+Persistence layer for the FIRE / wealth projection's assumptions. Follows the
+same sqlite3 + row_factory pattern as splitwise_data.py. Extra income now lives
+in the journal ledger (see journal.py); the old projection_extra_income table is
+left untouched in existing databases and only read once, to migrate its rows.
 """
 
 from typing import Any
@@ -19,14 +20,6 @@ CREATE TABLE IF NOT EXISTS projection_assumptions (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     {_ASSUMPTION_COLUMNS_SQL},
     updated_at TEXT
-);
-"""
-
-PROJECTION_EXTRA_INCOME_SCHEMA = """
-CREATE TABLE IF NOT EXISTS projection_extra_income (
-    year INTEGER PRIMARY KEY,
-    amount_lakhs REAL NOT NULL,
-    note TEXT
 );
 """
 
@@ -51,7 +44,6 @@ def _ensure_assumption_columns(conn) -> None:
 def create_projection_schema():
     conn = get_db_connection()
     conn.execute(PROJECTION_ASSUMPTIONS_SCHEMA)
-    conn.execute(PROJECTION_EXTRA_INCOME_SCHEMA)
     _ensure_assumption_columns(conn)
     conn.commit()
     conn.close()
@@ -121,40 +113,3 @@ def save_assumptions(partial_data: dict[str, Any]) -> dict[str, Any]:
     conn.commit()
     conn.close()
     return current
-
-
-def get_extra_income() -> list[dict[str, Any]]:
-    conn = get_db_connection()
-    cur = conn.execute(
-        "SELECT year, amount_lakhs, note FROM projection_extra_income ORDER BY year ASC"
-    )
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
-
-
-def get_extra_income_by_year() -> dict[int, float]:
-    return {row["year"]: row["amount_lakhs"] for row in get_extra_income()}
-
-
-def add_extra_income(year: int, amount_lakhs: float, note: str | None = None) -> None:
-    conn = get_db_connection()
-    conn.execute(
-        """
-        INSERT INTO projection_extra_income (year, amount_lakhs, note)
-        VALUES (?, ?, ?)
-        ON CONFLICT(year) DO UPDATE SET
-            amount_lakhs=excluded.amount_lakhs,
-            note=excluded.note
-        """,
-        (year, amount_lakhs, note),
-    )
-    conn.commit()
-    conn.close()
-
-
-def delete_extra_income(year: int) -> None:
-    conn = get_db_connection()
-    conn.execute("DELETE FROM projection_extra_income WHERE year = ?", (year,))
-    conn.commit()
-    conn.close()

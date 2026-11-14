@@ -19,6 +19,7 @@
             <nav class="page-nav">
                 <a href="/" class="nav-link"><i class="fa-solid fa-chart-pie"></i> Expenses</a>
                 <a href="/projection" class="nav-link active"><i class="fa-solid fa-seedling"></i> Wealth Projection</a>
+                <a href="/journal" class="nav-link"><i class="fa-solid fa-book"></i> Journal</a>
             </nav>
         </div>
     </header>
@@ -54,11 +55,11 @@
     </div>
 
     <!-- Floating trigger for the assumptions drawer -->
-    <button id="openDrawerBtn" class="fab-btn" title="Edit Assumptions & Extra Income">
+    <button id="openDrawerBtn" class="fab-btn" title="Edit Assumptions">
         <i class="fa-solid fa-sliders"></i>
     </button>
 
-    <!-- Right-hand drawer: Assumptions + Extra Income -->
+    <!-- Right-hand drawer: Assumptions -->
     <div id="drawerOverlay" class="drawer-overlay"></div>
     <aside id="assumptionsDrawer" class="drawer">
         <div class="drawer-header">
@@ -109,7 +110,8 @@
             </fieldset>
 
             <fieldset>
-                <legend>Loan</legend>
+                <legend>Loan (legacy)</legend>
+                <div class="hint-text"><i class="fa-solid fa-circle-info"></i> Used only until a loan is set up in the <a href="/journal">Journal</a>; after that the loan's own schedule replaces these.</div>
                 <div class="form-field">
                     <label for="loan_outstanding_lakhs">Loan Outstanding (Lakhs)</label>
                     <input type="number" step="0.01" id="loan_outstanding_lakhs" name="loan_outstanding_lakhs" required>
@@ -178,16 +180,6 @@
             </div>
         </form>
 
-        <hr class="drawer-divider">
-
-        <h2><i class="fa-solid fa-money-bill-wave"></i> Extra Income (Manual Entries)</h2>
-        <form id="extraIncomeForm" class="extra-income-form">
-            <select id="extraIncomeYear" required></select>
-            <input type="number" step="0.01" id="extraIncomeAmount" placeholder="Amount (Lakhs)" required>
-            <input type="text" id="extraIncomeNote" placeholder="Note (optional)">
-            <button type="submit"><i class="fa-solid fa-plus"></i> Add</button>
-        </form>
-        <div id="extraIncomeList" class="table-container"></div>
     </aside>
 
     <script src="/static/html-utils.js"></script>

@@ -7,8 +7,11 @@ into a year-by-year projection table whose columns mirror the original
 planning spreadsheet's columns A-X (year through total portfolio).
 """
 
+import calendar
 from datetime import date
 from typing import Any
+
+from loans import monthly_cash_outflow, summarize_year as summarize_loan_year
 
 # Fixed horizon start/end used as the API defaults and as the anchor for
 # assumption validation (projection_data.save_assumptions) - named constants
@@ -87,7 +90,7 @@ def _blend_year(
     today: date,
     actual_monthly_spend: dict[str, float],
     assumed_total_expense: float,
-    emi_amount: float,
+    loan_outflow_months: list[float],
     total_income: float,
 ) -> dict[str, Any]:
     """
@@ -104,12 +107,15 @@ def _blend_year(
                      spend recorded so far is shown for information only.
       forecast     - a month still to come in the current year.
 
-    Forecast expense for a month is the year's assumed total / 12. Income is
+    `loan_outflow_months` is the 12 monthly loan payments (EMI + prepayment)
+    already inside the assumed total. A forecast month spends the non-loan part
+    of the assumed total evenly (/12) plus that month's own loan payment; an
+    actual month is recorded spend plus that month's loan payment. With a flat
+    EMI this is simply assumed total / 12 for forecast months. Income is
     always the assumed annual figure / 12 (there is no income data source).
     """
-    forecast_month_expense = assumed_total_expense / 12
+    non_loan_month = (assumed_total_expense - sum(loan_outflow_months)) / 12
     income_month = total_income / 12
-    emi_month = emi_amount / 12
 
     months = []
     year_expense = 0.0
@@ -133,8 +139,10 @@ def _blend_year(
         if status != "actual":
             all_actual = False
 
+        loan_month = loan_outflow_months[month_number - 1]
+        forecast_month_expense = non_loan_month + loan_month
         if status == "actual":
-            expense = recorded + emi_month
+            expense = recorded + loan_month
             actual_spend_total += recorded
         else:
             expense = forecast_month_expense
@@ -159,6 +167,73 @@ def _blend_year(
     }
 
 
+BUCKETS = ("cash", "equity", "debt")
+
+
+def _as_date(value: Any) -> date:
+    return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+
+
+def _anchors_by_year(
+    observations: list[dict[str, Any]], start_year: int, end_year: int
+) -> dict[str, dict[int, tuple[date, float]]]:
+    """bucket -> year -> (as_of, balance): the latest observation in that year
+    (ties: the later in the list). Observations outside the window are ignored."""
+    anchors: dict[str, dict[int, tuple[date, float]]] = {}
+    for observation in observations:
+        bucket = observation["bucket"]
+        if bucket not in BUCKETS:
+            continue
+        as_of = _as_date(observation["as_of"])
+        if not start_year <= as_of.year <= end_year:
+            continue
+        current = anchors.setdefault(bucket, {}).get(as_of.year)
+        if current is None or as_of >= current[0]:
+            anchors[bucket][as_of.year] = (as_of, observation["amount_lakhs"])
+    return anchors
+
+
+def _transfer_deltas_by_year(
+    transfers: list[dict[str, Any]], observations: list[dict[str, Any]], start_year: int, end_year: int
+) -> dict[int, dict[str, float]]:
+    latest_observed: dict[str, date] = {}
+    for observation in observations:
+        if observation["bucket"] in BUCKETS:
+            as_of = _as_date(observation["as_of"])
+            if observation["bucket"] not in latest_observed or as_of > latest_observed[observation["bucket"]]:
+                latest_observed[observation["bucket"]] = as_of
+
+    deltas: dict[int, dict[str, float]] = {}
+    for transfer in transfers:
+        moved_on = _as_date(transfer["date"])
+        touched = (transfer["from_bucket"], transfer["to_bucket"])
+        if not start_year <= moved_on.year <= end_year:
+            continue
+        if any(bucket in latest_observed and latest_observed[bucket] >= moved_on for bucket in touched):
+            continue
+        year_deltas = deltas.setdefault(moved_on.year, {bucket: 0.0 for bucket in BUCKETS})
+        if transfer["from_bucket"] in year_deltas:
+            year_deltas[transfer["from_bucket"]] -= transfer["amount_lakhs"]
+        if transfer["to_bucket"] in year_deltas:
+            year_deltas[transfer["to_bucket"]] += transfer["amount_lakhs"]
+    return deltas
+
+
+def _elapsed_year_fraction(as_of: date) -> float:
+    days_in_year = 366 if calendar.isleap(as_of.year) else 365
+    return as_of.timetuple().tm_yday / days_in_year
+
+
+def _elapsed_net_cash_flow(as_of: date, annual_net: float, blend: dict[str, Any] | None) -> float:
+    """Net cash flow of the year up to the end of `as_of`: month by month when
+    the year is blended with actuals, otherwise pro rata by day."""
+    if blend is None:
+        return annual_net * _elapsed_year_fraction(as_of)
+    elapsed = sum(month["net"] for month in blend["months"][: as_of.month - 1])
+    days_in_month = calendar.monthrange(as_of.year, as_of.month)[1]
+    return elapsed + blend["months"][as_of.month - 1]["net"] * as_of.day / days_in_month
+
+
 def run_projection(
     assumptions: dict[str, Any],
     extra_income_by_year: dict[int, float] | None = None,
@@ -166,6 +241,9 @@ def run_projection(
     end_year: int = PROJECTION_END_YEAR,
     actual_monthly_spend: dict[str, float] | None = None,
     today: date | None = None,
+    loan_timeline: list[dict[str, Any]] | None = None,
+    observations: list[dict[str, Any]] | None = None,
+    transfers: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Returns one dict per year from start_year to end_year (inclusive),
@@ -183,9 +261,36 @@ def run_projection(
     all later years derive from is never re-based on actuals. Without
     `actual_monthly_spend` the output is exactly the plain forecast, with no
     extra keys. `today` is injectable for tests and defaults to date.today().
+
+    Journal inputs (each optional; omitted -> exactly the plain forecast):
+      loan_timeline - monthly rows from loans.build_timeline(). When non-empty
+                      it replaces the flat annual EMI: each year's EMI and
+                      prepayments come from the schedule, rows gain
+                      loan_interest / loan_principal / loan_prepayment /
+                      loan_balance_end, and prepayments are part of total
+                      expense (so they are deducted from cash).
+      observations  - known cash/equity/debt balances ({bucket, as_of,
+                      amount_lakhs}). For the year of the latest observation
+                      of a bucket the year's start balance is replaced by the
+                      one IMPLIED by the observation (cash: observed balance
+                      minus the net cash flow elapsed to that date; equity/
+                      debt: observed balance de-grown by the elapsed share of
+                      the year's return), so the year closes where the
+                      observation plus the rest of the year's flows say it
+                      should. Later years carry on from there. Anchored rows
+                      carry an `anchored` {bucket: as_of} dict.
+      transfers     - invest/withdraw entries ({date, amount_lakhs,
+                      from_bucket, to_bucket}) applied at the end of their
+                      year, except those dated on/before an observation of a
+                      bucket they touch (that balance already includes them).
+                      Growth on a transferred amount is not modelled in the
+                      year of transfer. Rows gain a `transfers` dict.
     """
     validate_assumptions(assumptions)
     extra_income_by_year = extra_income_by_year or {}
+    loan_enabled = bool(loan_timeline)
+    anchors = _anchors_by_year(observations or [], start_year, end_year)
+    transfer_deltas = _transfer_deltas_by_year(transfers or [], observations or [], start_year, end_year)
     actuals_enabled = actual_monthly_spend is not None
     if actuals_enabled and today is None:
         today = date.today()
@@ -276,12 +381,22 @@ def run_projection(
                 parents_expense = parents_prev * (1 + healthcare_inflation)
             parents_prev = parents_expense
 
-        # F/G - EMI
-        emi_active = year <= loan_end_year
-        emi_amount = assumptions["annual_emi_lakhs"] if emi_active else 0.0
+        # F/G - EMI. With a loan schedule (journal) the amounts come from the
+        # month-by-month amortization; otherwise the flat annual assumption.
+        if loan_enabled:
+            loan_year = summarize_loan_year(loan_timeline, year)
+            emi_amount = loan_year["emi"]
+            emi_active = emi_amount > 0
+            loan_prepayment = loan_year["prepayment"]
+            loan_outflow_months = monthly_cash_outflow(loan_timeline, year)
+        else:
+            emi_active = year <= loan_end_year
+            emi_amount = assumptions["annual_emi_lakhs"] if emi_active else 0.0
+            loan_prepayment = 0.0
+            loan_outflow_months = [emi_amount / 12] * 12
 
         # H - Total Expense
-        total_expense = base_expense + kids_expense + parents_expense + emi_amount
+        total_expense = base_expense + kids_expense + parents_expense + emi_amount + loan_prepayment
 
         # I - Rental Income
         if year == start_year:
@@ -312,7 +427,7 @@ def run_projection(
         blend = None
         if actuals_enabled and year <= today.year:
             blend = _blend_year(
-                year, today, actual_monthly_spend, assumed_total_expense, emi_amount, total_income
+                year, today, actual_monthly_spend, assumed_total_expense, loan_outflow_months, total_income
             )
             total_expense = blend["total_expense"]
 
@@ -321,19 +436,32 @@ def run_projection(
         reserve_contribution = max(0.0, total_income - total_expense)
 
         # O/P/Q - Cash flow
-        cash_start = cash_end_prev
         net_cash_flow = reserve_contribution - net_expense
+        year_anchors = {bucket: anchors[bucket][year] for bucket in anchors if year in anchors[bucket]}
+        if "cash" in year_anchors:
+            observed_on, observed_cash = year_anchors["cash"]
+            cash_start = observed_cash - _elapsed_net_cash_flow(observed_on, net_cash_flow, blend)
+        else:
+            cash_start = cash_end_prev
         cash_end = max(0.0, cash_start + net_cash_flow)
 
         # Withdrawal waterfall: cash -> debt -> equity
         cash_shortfall = max(0.0, -(cash_start + net_cash_flow))
 
         # R/S - Equity start/growth (before withdrawal)
-        equity_start = equity_end_prev
+        if "equity" in year_anchors:
+            observed_on, observed_equity = year_anchors["equity"]
+            equity_start = observed_equity / (1 + equity_return) ** _elapsed_year_fraction(observed_on)
+        else:
+            equity_start = equity_end_prev
         equity_growth = equity_start * equity_return
 
         # U/V - Debt start/growth (before withdrawal)
-        debt_start = debt_end_prev
+        if "debt" in year_anchors:
+            observed_on, observed_debt = year_anchors["debt"]
+            debt_start = observed_debt / (1 + debt_return) ** _elapsed_year_fraction(observed_on)
+        else:
+            debt_start = debt_end_prev
         debt_growth = debt_start * debt_return
 
         debt_withdrawal = min(cash_shortfall, debt_start + debt_growth)
@@ -342,6 +470,14 @@ def run_projection(
         # T/W - Equity/Debt end
         equity_end = equity_start + equity_growth - equity_withdrawal
         debt_end = debt_start + debt_growth - debt_withdrawal
+
+        # Journal invest/withdraw transfers between buckets (after the
+        # waterfall, so they never trigger it).
+        year_transfers = transfer_deltas.get(year)
+        if year_transfers:
+            cash_end = max(0.0, cash_end + year_transfers["cash"])
+            equity_end += year_transfers["equity"]
+            debt_end += year_transfers["debt"]
 
         # X - Total Portfolio (year-end snapshot only; does not feed back
         # into equity_end/debt_end).
@@ -373,6 +509,18 @@ def run_projection(
             "debt_end": round(debt_end, 4),
             "total_portfolio": round(total_portfolio, 4),
         })
+
+        if loan_enabled:
+            rows[-1].update({
+                "loan_interest": round(loan_year["interest"], 4),
+                "loan_principal": round(loan_year["principal"], 4),
+                "loan_prepayment": round(loan_prepayment, 4),
+                "loan_balance_end": None if loan_year["closing"] is None else round(loan_year["closing"], 4),
+            })
+        if year_anchors:
+            rows[-1]["anchored"] = {bucket: pair[0].isoformat() for bucket, pair in year_anchors.items()}
+        if year_transfers:
+            rows[-1]["transfers"] = {bucket: round(value, 4) for bucket, value in year_transfers.items()}
 
         if actuals_enabled:
             if blend is None:

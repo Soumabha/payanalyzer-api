@@ -15,6 +15,7 @@ from pathlib import Path
 
 from datetime import date
 
+from loans import build_timeline
 from projections import (
     ASSUMPTION_FIELDS,
     DEFAULT_ASSUMPTIONS,
@@ -26,6 +27,9 @@ from projections import (
 STATIC = Path(__file__).parent / "static"
 PROJECTION_JS = (STATIC / "projection.js").read_text()
 PROJECTION_HTML = (STATIC / "projection.html").read_text()
+JOURNAL_JS = (STATIC / "journal.js").read_text()
+JOURNAL_HTML = (STATIC / "journal.html").read_text()
+MAIN_PY = (Path(__file__).parent / "main.py").read_text()
 
 
 def _js_block(name: str) -> str:
@@ -46,13 +50,25 @@ def _strings(block: str) -> list[str]:
 
 
 def _engine_row_keys() -> set[str]:
-    """Keys of both response shapes: the plain forecast and the actuals mode
-    (whose current-year row also carries the month sub-rows)."""
+    """Keys of every response shape: the plain forecast, the actuals mode
+    (current-year row carries month sub-rows), and rows with journal inputs
+    (loan schedule, check-in anchors, transfers)."""
+    today = date(PROJECTION_START_YEAR, 6, 1)
     plain = set(run_projection(DEFAULT_ASSUMPTIONS)[0])
-    blended = run_projection(
-        DEFAULT_ASSUMPTIONS, actual_monthly_spend={}, today=date(PROJECTION_START_YEAR, 6, 1)
+    blended = set(run_projection(DEFAULT_ASSUMPTIONS, actual_monthly_spend={}, today=today)[0])
+    timeline = build_timeline(
+        [{"as_of": f"{PROJECTION_START_YEAR - 1}-12-31", "amount_lakhs": 10.0}],
+        [{"effective_from": f"{PROJECTION_START_YEAR - 1}-12-31", "annual_rate_pct": 9.0, "emi_lakhs": 1.0}],
+        [], PROJECTION_START_YEAR, PROJECTION_END_YEAR,
+    )
+    journal_row = run_projection(
+        DEFAULT_ASSUMPTIONS,
+        loan_timeline=timeline,
+        observations=[{"bucket": "cash", "as_of": f"{PROJECTION_START_YEAR}-03-01", "amount_lakhs": 1.0}],
+        transfers=[{"date": f"{PROJECTION_START_YEAR}-04-01", "amount_lakhs": 1.0,
+                    "from_bucket": "cash", "to_bucket": "equity"}],
     )[0]
-    return plain | set(blended)
+    return plain | blended | set(journal_row)
 
 
 def _engine_month_keys() -> set[str]:
@@ -109,3 +125,47 @@ def test_js_projection_year_constants_match_the_backend():
     start = int(re.search(r"const PROJECTION_START_YEAR = (\d+)", PROJECTION_JS).group(1))
     end = int(re.search(r"const PROJECTION_END_YEAR = (\d+)", PROJECTION_JS).group(1))
     assert (start, end) == (PROJECTION_START_YEAR, PROJECTION_END_YEAR)
+
+
+# -- journal page ---------------------------------------------------------------
+
+
+def _routes() -> set[tuple[str, str]]:
+    found = re.findall(r'@app\.(get|post|put|delete)\("([^"]+)"', MAIN_PY)
+    return {(method.upper(), re.sub(r"\{\w+\}", "{}", path)) for method, path in found}
+
+
+def _js_api_calls(source: str) -> set[tuple[str, str]]:
+    calls = re.findall(r'api\("(GET|POST|PUT|DELETE)",\s*[`"](/api/[^`"?]+)[`"]', source)
+    return {(method, re.sub(r"\$\{[^}]+\}", "{}", path)) for method, path in calls}
+
+
+def _pydantic_fields() -> set[str]:
+    fields: set[str] = set()
+    for body in re.findall(r"class \w+\(BaseModel\):\n((?:    .+\n|\n)+)", MAIN_PY):
+        fields |= set(re.findall(r"^    (\w+):", body, re.MULTILINE))
+    return fields
+
+
+def test_every_endpoint_the_journal_page_calls_exists_in_main():
+    calls = _js_api_calls(JOURNAL_JS)
+    assert len(calls) >= 10, "parser no longer sees the journal API calls"
+    assert calls <= _routes()
+
+
+def test_every_form_field_name_in_the_journal_page_is_a_request_model_field():
+    names = set(re.findall(r'\bname:\s*"(\w+)"', JOURNAL_JS))
+    assert {"as_of", "entry_date", "amount_lakhs", "annual_rate_pct"} <= names
+    assert names <= _pydantic_fields()
+
+
+def test_every_element_id_the_journal_script_looks_up_exists_in_the_page():
+    wanted = set(re.findall(r'getElementById\("(\w+)"\)', JOURNAL_JS))
+    # Ids come from the page itself or from markup the script builds (the modal).
+    present = set(re.findall(r'id="(\w+)"', JOURNAL_HTML)) | set(re.findall(r'id="(\w+)"', JOURNAL_JS))
+    assert wanted - present == set()
+
+
+def test_the_journal_page_is_linked_from_every_page_nav():
+    for page in ("index.html", "projection.html", "journal.html"):
+        assert 'href="/journal"' in (STATIC / page).read_text(), page
