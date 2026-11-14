@@ -963,3 +963,21 @@ td i {
     font-size: 0.95rem;
     color: var(--text-main);
 }
+
+/* --- Journal: Delete loan --- */
+.btn.btn-danger {
+    background: rgba(255, 71, 87, 0.12);
+    border-color: rgba(255, 71, 87, 0.5);
+    color: #ff6b7a;
+}
+.btn.btn-danger:hover { background: rgba(255, 71, 87, 0.28); border-color: #ff4757; color: #fff; box-shadow: none; }
+.loan-danger {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--border-color);
+}
+.loan-danger .hint-text { margin: 0; }

@@ -118,19 +118,60 @@ def _find_terms(store, terms_id):
 
 def edit_loan_terms(store, now, terms_id, *, effective_from, annual_rate_pct, emi_lakhs, note=None):
     """Correct a terms record. The old record is voided and a corrected one
-    added, so the history keeps what was entered before."""
-    loan, _ = _find_terms(store, terms_id)
-    store.add_terms(loan["id"], _iso(effective_from, "effective_from"), annual_rate_pct, emi_lakhs, note, now)
+    added, so the history keeps what was entered before.
+
+    The OPENING terms (the earliest record) apply to every month before the
+    first change, so they can't be moved to the same month as, or after, the next
+    record: that record would then back-apply to all the earlier months."""
+    loan, live = _find_terms(store, terms_id)
+    effective_from = _iso(effective_from, "effective_from")
+    opening, others = live[0], live[1:]
+    if terms_id == opening["id"] and others and effective_from[:7] >= others[0]["effective_from"][:7]:
+        raise JournalError(
+            f"The opening terms must start in an earlier month than the next change "
+            f"({others[0]['effective_from']}), or that change would apply to all the months before it."
+        )
+    store.add_terms(loan["id"], effective_from, annual_rate_pct, emi_lakhs, note, now)
     store.void_terms(terms_id, now)
     store.commit()
 
 
 def void_loan_terms(store, now, terms_id):
+    """Delete a rate/EMI change. The opening terms can't be deleted: they define the
+    rate for every month before the first change, and with them gone the next
+    record would apply to all of those months. Use delete_loan to remove a loan."""
     _, live = _find_terms(store, terms_id)
     if len(live) == 1:
-        raise JournalError("The loan's only terms record can't be voided.")
+        raise JournalError("The loan's only terms record can't be voided; use Delete loan to remove the whole loan.")
+    if terms_id == live[0]["id"]:
+        raise JournalError(
+            "The opening terms apply to every month before the first change, so they can't be deleted. "
+            "Edit them, delete the later changes first, or use Delete loan."
+        )
     store.void_terms(terms_id, now)
     store.commit()
+
+
+def delete_loan(store, now, loan_id):
+    """Remove a loan entered by mistake, with everything that belongs to it: its
+    terms, its recorded balances and its prepayments. Nothing is erased (rows are
+    marked removed and the loan closed), but the loan stops counting everywhere.
+    A loan that was simply paid off does not need this: its schedule ends by itself."""
+    loan = _require_loan(store, loan_id)
+    removed = {"terms": 0, "balances": 0, "prepayments": 0}
+    for terms in store.terms(loan["id"]):
+        store.void_terms(terms["id"], now)
+        removed["terms"] += 1
+    for observation in store.observations("loan", loan["id"]):
+        store.void_observation(observation["id"], now)
+        removed["balances"] += 1
+    for entry in store.entries("prepayment"):
+        if entry["ref_id"] == loan["id"]:
+            store.void_entry(entry["id"], now)
+            removed["prepayments"] += 1
+    store.close_loan(loan["id"], now)
+    store.commit()
+    return removed
 
 
 def add_prepayment(store, now, *, loan_id, entry_date, amount_lakhs, note=None):
@@ -281,16 +322,40 @@ def _check_in_balances(store, ids):
     return found
 
 
-def _a_loan_would_lose_all_balances(store, removing):
-    """True if voiding these observations would leave some loan with none."""
+def _opening_balance_problem(store, removing, verb="deleted"):
+    """Why these observations can't be removed, or None. A loan's OPENING balance
+    (its earliest recorded one) is what the schedule is built from: with it gone,
+    every month before the next balance would have no loan at all. Only
+    delete_loan removes it."""
     gone: dict[int, set] = {}
     for observation in removing:
         if observation["bucket"] == "loan":
             gone.setdefault(observation["ref_id"], set()).add(observation["id"])
-    return any(
-        not [o for o in store.observations("loan", loan_id) if o["id"] not in ids]
-        for loan_id, ids in gone.items()
-    )
+    for loan_id, ids in gone.items():
+        live = store.observations("loan", loan_id)             # oldest first
+        if not live or live[0]["id"] not in ids:
+            continue
+        name = next((l["name"] for l in store.loans() if l["id"] == loan_id), "a loan")
+        if len(live) == 1:
+            return f"{name}'s only balance observation can't be {verb}; use Delete loan to remove the whole loan."
+        return (f"This holds the opening balance of {name}, so it can't be {verb}. "
+                f"Edit it, or use Delete loan.")
+    return None
+
+
+def _refuse_moving_an_opening_balance_later(store, old, values, as_of):
+    """A loan's opening balance can't be re-dated to the month of (or after) its
+    next recorded balance: that balance would become the opening and the months
+    before it would lose the loan."""
+    for key, observation in old.items():
+        if observation["bucket"] != "loan" or values.get(key) is None or as_of <= observation["as_of"]:
+            continue
+        live = store.observations("loan", observation["ref_id"])
+        if live and live[0]["id"] == observation["id"] and len(live) > 1 and as_of[:7] >= live[1]["as_of"][:7]:
+            raise JournalError(
+                f"The opening balance can't move to {as_of}: it must stay in an earlier month than the "
+                f"next recorded balance ({live[1]['as_of']}). Edit that balance instead, or use Delete loan."
+            )
 
 
 def edit_check_in(store, now, *, ids, as_of, cash_lakhs=None, equity_lakhs=None, debt_lakhs=None,
@@ -307,8 +372,10 @@ def edit_check_in(store, now, *, ids, as_of, cash_lakhs=None, equity_lakhs=None,
         raise JournalError("A check-in needs at least one balance; delete it instead.")
     targets = {key: _observation_target(store, key) for key, value in values.items() if value is not None}
     removed = [old[key] for key, value in values.items() if value is None and key in old]
-    if _a_loan_would_lose_all_balances(store, removed):
-        raise JournalError("A loan's only balance observation can't be removed.")
+    problem = _opening_balance_problem(store, removed, verb="removed")
+    if problem:
+        raise JournalError(problem)
+    _refuse_moving_an_opening_balance_later(store, old, values, as_of)
 
     for key, value in values.items():
         previous = old.get(key)
@@ -331,8 +398,9 @@ def void_check_in(store, now, ids):
     removing = list(_check_in_balances(store, ids).values())
     if not removing:
         raise JournalError("Nothing to delete.")
-    if _a_loan_would_lose_all_balances(store, removing):
-        raise JournalError("A loan's only balance observation can't be deleted.")
+    problem = _opening_balance_problem(store, removing)
+    if problem:
+        raise JournalError(problem)
     for observation in removing:
         store.void_observation(observation["id"], now)
     store.commit()

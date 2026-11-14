@@ -11,6 +11,7 @@ import pytest
 
 from loans import build_timeline, emi_from_tenure
 from projections import DEFAULT_ASSUMPTIONS, PROJECTION_START_YEAR, run_projection
+from test_projections import disabled_assumptions
 
 Y = PROJECTION_START_YEAR
 EMI = emi_from_tenure(50.0, 9.0, 120)
@@ -367,13 +368,70 @@ def test_a_transfer_in_an_earlier_month_is_applied_and_the_later_check_in_shows_
         month(without, Y, 11)["checkin"]["cash"]["variance"] + 4.0, abs=1e-3)
 
 
-def test_a_transfer_on_or_before_a_same_month_check_in_of_a_touched_bucket_is_already_in_that_balance():
+def test_a_transfer_on_or_before_a_same_month_check_in_is_already_in_the_observed_bucket_only():
+    """The cash check-in already includes the cash side of a 4L invest made before it; the
+    equity side is not observed, so it must still arrive."""
     observations = [obs("cash", 20.0, f"{Y}-11-14")]
+    base = run(observations=observations)
     on_before = run(observations=observations, transfers=[transfer(4.0, f"{Y}-11-05")])
-    assert "transfers" not in on_before[Y]
+    assert on_before[Y]["transfers"] == {"cash": 0.0, "equity": 4.0, "debt": 0.0}
+    assert month(on_before, Y, 11)["cash_end"] == month(base, Y, 11)["cash_end"]                  # cash side absorbed
+    assert month(on_before, Y, 11)["equity_end"] == pytest.approx(month(base, Y, 11)["equity_end"] + 4.0, abs=1e-3)
     after = run(observations=observations, transfers=[transfer(2.0, f"{Y}-11-20")])
     assert after[Y]["transfers"]["cash"] == -2.0
-    assert month(after, Y, 11)["cash_end"] == pytest.approx(month(run(observations=observations), Y, 11)["cash_end"] - 2.0, abs=1e-3)
+    assert month(after, Y, 11)["cash_end"] == pytest.approx(month(base, Y, 11)["cash_end"] - 2.0, abs=1e-3)
+
+
+# -- a check-in of only one side of a transfer (partial check-ins) ------------------------------
+#
+# Start 10L cash / 0 equity, invest 3L cash -> equity on 10 Jan. Whatever a check-in observes
+# is already net of the move; whatever it does not observe must still get its half.
+
+
+def transfer_world(observations, transfers, cash=10.0, equity=0.0):
+    assumptions = disabled_assumptions(starting_cash_lakhs=cash, equity_portfolio_lakhs=equity, debt_portfolio_lakhs=0.0)
+    row = run_projection(assumptions, actual_monthly_spend={}, today=date(Y, 3, 10),
+                         observations=observations, transfers=transfers)[0]
+    january = row["months"][0]
+    return january["cash_end"], january["equity_end"], january["total_portfolio"]
+
+
+JAN_INVEST = {"date": f"{Y}-01-10", "amount_lakhs": 3.0, "from_bucket": "cash", "to_bucket": "equity"}
+
+
+def test_a_cash_only_check_in_keeps_the_equity_half_of_an_earlier_same_month_invest():
+    assert transfer_world([obs("cash", 7.0, f"{Y}-01-20")], [JAN_INVEST]) == pytest.approx((7.0, 3.0, 10.0))
+
+
+def test_an_equity_only_check_in_keeps_the_cash_half_and_creates_no_money():
+    assert transfer_world([obs("equity", 3.0, f"{Y}-01-20")], [JAN_INVEST]) == pytest.approx((7.0, 3.0, 10.0))
+
+
+def test_a_full_check_in_absorbs_both_halves_and_no_check_in_applies_both():
+    assert transfer_world([obs("cash", 7.0, f"{Y}-01-20"), obs("equity", 3.0, f"{Y}-01-20")], [JAN_INVEST]) == pytest.approx((7.0, 3.0, 10.0))
+    assert transfer_world([], [JAN_INVEST]) == pytest.approx((7.0, 3.0, 10.0))
+
+
+def test_a_check_in_dated_before_the_transfer_does_not_absorb_it():
+    # observed on the 5th: it does not yet include the 10th's invest, so both halves apply
+    assert transfer_world([obs("cash", 10.0, f"{Y}-01-05")], [JAN_INVEST]) == pytest.approx((7.0, 3.0, 10.0))
+
+
+def test_a_withdraw_with_an_equity_only_check_in_keeps_the_cash_half():
+    withdraw = {"date": f"{Y}-01-10", "amount_lakhs": 3.0, "from_bucket": "equity", "to_bucket": "cash"}
+    assert transfer_world([obs("equity", 7.0, f"{Y}-01-20")], [withdraw], cash=0.0, equity=10.0) == pytest.approx((3.0, 7.0, 10.0))
+    assert transfer_world([obs("cash", 3.0, f"{Y}-01-20")], [withdraw], cash=0.0, equity=10.0) == pytest.approx((3.0, 7.0, 10.0))
+
+
+def test_the_total_portfolio_is_conserved_by_a_transfer_whatever_is_observed():
+    """With no flows or growth, a transfer only moves money, so every combination of
+    check-ins that is consistent with it must leave the total unchanged."""
+    consistent = [
+        [], [obs("cash", 7.0, f"{Y}-01-20")], [obs("equity", 3.0, f"{Y}-01-20")],
+        [obs("cash", 7.0, f"{Y}-01-31"), obs("equity", 3.0, f"{Y}-01-12")],
+    ]
+    for observations in consistent:
+        assert transfer_world(observations, [JAN_INVEST])[2] == pytest.approx(10.0), observations
 
 
 def test_a_transfer_that_would_overdraw_cash_floors_cash_at_zero():

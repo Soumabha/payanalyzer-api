@@ -39,6 +39,11 @@ class InMemoryJournalStore:
             {k: l[k] for k in ("id", "name", "created_at")} for l in self._loans if l["closed_at"] is None
         ]
 
+    def close_loan(self, loan_id, closed_at):
+        for loan in self._loans:
+            if loan["id"] == loan_id and loan["closed_at"] is None:
+                loan["closed_at"] = closed_at
+
     def add_terms(self, loan_id, effective_from, annual_rate_pct, emi_lakhs, note, created_at):
         row = {
             "id": len(self._terms) + 1, "loan_id": loan_id, "effective_from": effective_from,

@@ -205,29 +205,33 @@ def _transfer_deltas_by_month(
     transfers: list[dict[str, Any]], observations: list[dict[str, Any]], start_year: int
 ) -> dict[str, dict[str, float]]:
     """month -> bucket -> net change from invest/withdraw entries, applied at the
-    END of their month. A transfer made on/before a check-in of a bucket it
-    touches, in the same month, is already inside that observed balance and is
-    skipped. A transfer in an earlier month is applied; the later check-in then
-    shows only what it did not explain."""
+    END of their month.
+
+    Each side of a transfer is judged on its own: a side is skipped only if THAT
+    bucket has a check-in in the same month dated on/after the transfer - the
+    balance observed then already includes it. The other side is still applied,
+    so a check-in of just one bucket never drops (or duplicates) the half of a
+    transfer it did not observe. A transfer in an earlier month than a check-in
+    is applied in full; the check-in then shows only what it did not explain."""
     deltas: dict[str, dict[str, float]] = {}
     for transfer in transfers:
         moved_on = _as_date(transfer["date"])
         if moved_on.year < start_year:
             continue
-        touched = (transfer["from_bucket"], transfer["to_bucket"])
-        absorbed = any(
-            observation["bucket"] in touched
-            and _month_key(_as_date(observation["as_of"])) == _month_key(moved_on)
-            and _as_date(observation["as_of"]) >= moved_on
-            for observation in observations
-        )
-        if absorbed:
-            continue
-        month_deltas = deltas.setdefault(_month_key(moved_on), {bucket: 0.0 for bucket in BUCKETS})
-        if transfer["from_bucket"] in month_deltas:
-            month_deltas[transfer["from_bucket"]] -= transfer["amount_lakhs"]
-        if transfer["to_bucket"] in month_deltas:
-            month_deltas[transfer["to_bucket"]] += transfer["amount_lakhs"]
+        month = _month_key(moved_on)
+
+        def observed_after(bucket: str) -> bool:
+            return any(
+                observation["bucket"] == bucket
+                and _month_key(_as_date(observation["as_of"])) == month
+                and _as_date(observation["as_of"]) >= moved_on
+                for observation in observations
+            )
+
+        for bucket, sign in ((transfer["from_bucket"], -1), (transfer["to_bucket"], 1)):
+            if bucket in BUCKETS and not observed_after(bucket):
+                month_deltas = deltas.setdefault(month, {name: 0.0 for name in BUCKETS})
+                month_deltas[bucket] += sign * transfer["amount_lakhs"]
     return deltas
 
 
@@ -394,10 +398,10 @@ def run_projection(
                       Check-ins after today's month are ignored.
       transfers     - invest/withdraw entries ({date, amount_lakhs,
                       from_bucket, to_bucket}), actuals mode only, applied at
-                      the end of their month, except those dated on/before a
-                      check-in of a bucket they touch in the same month (that
-                      balance already includes them). Rows gain a `transfers`
-                      dict.
+                      the end of their month; a side whose bucket has a
+                      same-month check-in on/after the transfer is skipped
+                      (that balance already includes it), the other side is
+                      not. Rows gain a `transfers` dict.
 
     In actuals mode every year up to today's runs month by month for balances
     (see _monthly_balance_path). Expenses and income are never changed by a

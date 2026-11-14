@@ -116,6 +116,9 @@ class SqliteJournalStore:
             for r in self._conn.execute("SELECT id, name, created_at FROM loans WHERE closed_at IS NULL ORDER BY id")
         ]
 
+    def close_loan(self, loan_id, closed_at):
+        self._conn.execute("UPDATE loans SET closed_at = ? WHERE id = ? AND closed_at IS NULL", (closed_at, loan_id))
+
     def add_terms(self, loan_id, effective_from, annual_rate_pct, emi_lakhs, note, created_at):
         cur = self._conn.execute(
             "INSERT INTO loan_terms (loan_id, effective_from, annual_rate_pct, emi_lakhs, note, created_at) "

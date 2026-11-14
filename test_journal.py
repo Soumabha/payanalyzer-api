@@ -396,15 +396,18 @@ def test_deleting_a_check_in_voids_every_balance_in_it():
     assert len(store._observations) == 3                                  # kept, voided
 
 
-def test_deleting_the_check_in_that_holds_the_loans_only_balance_is_refused_and_changes_nothing():
+def test_deleting_the_check_in_that_holds_a_loans_opening_balance_is_refused_even_when_later_balances_exist():
     store = store_with_loan(as_of="2026-10-31")
     journal.record_check_in(store, NOW, as_of="2026-10-31", cash_lakhs=5.0)
     with pytest.raises(journal.JournalError, match="only balance"):
         journal.void_check_in(store, NOW, group_ids(store, "2026-10-31"))
     assert len(store.observations()) == 2
     journal.add_loan_statement(store, NOW, loan_id=1, as_of="2027-01-31", outstanding_lakhs=45.0)
-    journal.void_check_in(store, NOW, group_ids(store, "2026-10-31"))     # another loan balance exists now
-    assert [o["bucket"] for o in store.observations()] == ["loan"]
+    with pytest.raises(journal.JournalError, match="opening balance"):                     # a later balance exists now
+        journal.void_check_in(store, NOW, group_ids(store, "2026-10-31"))
+    assert len(store.observations()) == 3
+    journal.void_check_in(store, NOW, group_ids(store, "2027-01-31"))                      # the non-opening one can go
+    assert [o["bucket"] for o in store.observations()] == ["loan", "cash"] or len(store.observations()) == 2
 
 
 def test_editing_loan_terms_replaces_the_record_and_keeps_the_history():
@@ -713,3 +716,187 @@ def test_entering_a_loan_changes_the_projection_only_from_its_first_month():
     assert [m["expense"] for m in a[:10]] == [m["expense"] for m in b[:10]]
     assert [m["cash_end"] for m in a[:10]] == [m["cash_end"] for m in b[:10]]
     assert b[10]["expense"] > a[10]["expense"]                                          # November onwards differs
+
+
+# -- protecting a loan's opening entries; Delete loan is the way to remove them -------------
+
+
+def loan_with_change(**opening):
+    """Loan 1: 9% from 2025-12-31, then a 12% change from 2027-01-01."""
+    store = store_with_loan(as_of="2025-12-31", **opening)
+    journal.add_loan_terms(store, NOW, loan_id=1, effective_from="2027-01-01", annual_rate_pct=12.0,
+                           emi_lakhs=store.terms(1)[0]["emi_lakhs"])
+    return store
+
+
+def rate_in(store, month):
+    from loans import terms_for_month
+    return terms_for_month(store.terms(1), month)["annual_rate_pct"]
+
+
+def test_the_opening_terms_cannot_be_deleted_so_a_later_rate_never_applies_backwards():
+    store = loan_with_change()
+    with pytest.raises(journal.JournalError, match="opening terms"):
+        journal.void_loan_terms(store, NOW, 1)
+    assert [t["annual_rate_pct"] for t in store.terms(1)] == [9.0, 12.0]
+    assert rate_in(store, "2026-02") == 9.0
+
+
+def test_a_later_rate_change_can_still_be_deleted():
+    store = loan_with_change()
+    journal.void_loan_terms(store, NOW, 2)
+    assert [t["annual_rate_pct"] for t in store.terms(1)] == [9.0]
+
+
+def test_adding_an_earlier_record_makes_the_old_opening_an_ordinary_change_that_can_go():
+    store = loan_with_change()
+    journal.add_loan_terms(store, NOW, loan_id=1, effective_from="2025-06-01", annual_rate_pct=8.0, emi_lakhs=0.7)
+    journal.void_loan_terms(store, NOW, 1)                                  # the old 2025-12-31 record is no longer the opening
+    assert [t["annual_rate_pct"] for t in store.terms(1)] == [8.0, 12.0]
+    assert rate_in(store, "2026-02") == 8.0
+
+
+def test_the_opening_terms_can_be_edited_but_not_moved_to_or_past_the_next_change():
+    store = loan_with_change()
+    opening_id = lambda: store.terms(1)[0]["id"]
+    journal.edit_loan_terms(store, NOW, opening_id(), effective_from="2025-12-31", annual_rate_pct=9.5, emi_lakhs=0.7)   # plain edit
+    journal.edit_loan_terms(store, NOW, opening_id(), effective_from="2025-10-01", annual_rate_pct=9.5, emi_lakhs=0.7)   # earlier is fine
+    opening = store.terms(1)[0]
+    with pytest.raises(journal.JournalError, match="earlier month than the next change"):
+        journal.edit_loan_terms(store, NOW, opening["id"], effective_from="2028-01-01", annual_rate_pct=9.5, emi_lakhs=0.7)
+    with pytest.raises(journal.JournalError, match="earlier month than the next change"):
+        journal.edit_loan_terms(store, NOW, opening["id"], effective_from="2027-01-20", annual_rate_pct=9.5, emi_lakhs=0.7)
+    assert rate_in(store, "2026-02") == 9.5 and len(store.terms(1)) == 2
+
+
+def test_a_later_change_can_be_re_dated_freely():
+    store = loan_with_change()
+    journal.edit_loan_terms(store, NOW, 2, effective_from="2026-06-01", annual_rate_pct=12.0, emi_lakhs=0.7)
+    assert rate_in(store, "2026-05") == 9.0 and rate_in(store, "2026-06") == 12.0
+
+
+def test_terms_dated_after_the_opening_balance_still_apply_to_the_months_before_them():
+    """Your real loans: balance 31 Dec 2025, only terms from 14 Nov 2026. Jan-Oct use those terms."""
+    store = store_with_loan(as_of="2025-12-31", annual_rate_pct=9.0)
+    journal.edit_loan_terms(store, NOW, 1, effective_from="2026-11-14", annual_rate_pct=9.0, emi_lakhs=0.7)
+    assert rate_in(store, "2026-01") == 9.0
+
+
+def opening_check_in(store, as_of="2025-12-31"):
+    return group_ids(store, as_of)
+
+
+def test_a_loans_opening_balance_cannot_be_deleted_when_a_statement_exists():
+    """The reproduction from review: deleting the 2025-12-31 row silently dropped ten months of EMI."""
+    store = store_with_loan(as_of="2025-12-31", outstanding_lakhs=58.1)
+    journal.add_loan_statement(store, NOW, loan_id=1, as_of="2026-11-14", outstanding_lakhs=50.73)
+    before = sum(r["emi_paid"] for r in journal.projection_inputs(store, 2026, 2031, True)["loan_timeline"] if r["month"] < "2027")
+    with pytest.raises(journal.JournalError, match="opening balance"):
+        journal.void_check_in(store, NOW, opening_check_in(store))
+    after = sum(r["emi_paid"] for r in journal.projection_inputs(store, 2026, 2031, True)["loan_timeline"] if r["month"] < "2027")
+    assert after == before and before > 11 * store.terms(1)[0]["emi_lakhs"]
+
+
+def test_a_loans_opening_balance_cannot_be_cleared_in_an_edit_but_other_balances_in_the_row_can():
+    store = store_with_loan(as_of="2025-12-31")
+    journal.add_loan_statement(store, NOW, loan_id=1, as_of="2026-11-14", outstanding_lakhs=40.0)
+    journal.record_check_in(store, NOW, as_of="2025-12-31", cash_lakhs=5.0)             # same date as the opening
+    ids = group_ids(store, "2025-12-31")
+    with pytest.raises(journal.JournalError, match="opening balance"):
+        journal.edit_check_in(store, NOW, ids=ids, as_of="2025-12-31", cash_lakhs=5.0)   # loan field left empty
+    journal.edit_check_in(store, NOW, ids=ids, as_of="2025-12-31", loan_balances={1: 49.0})  # drop the cash, keep the loan
+    assert {journal._observation_key(o) for o in store.observations() if o["as_of"] == "2025-12-31"} == {"loan_1"}
+
+
+def test_deleting_a_mixed_row_that_holds_an_opening_balance_is_refused_whole():
+    store = store_with_loan(as_of="2025-12-31")
+    journal.add_loan_statement(store, NOW, loan_id=1, as_of="2026-11-14", outstanding_lakhs=40.0)
+    journal.record_check_in(store, NOW, as_of="2025-12-31", cash_lakhs=5.0)
+    with pytest.raises(journal.JournalError, match="opening balance"):
+        journal.void_check_in(store, NOW, group_ids(store, "2025-12-31"))
+    assert len(store.observations("cash")) == 1                                       # the cash balance was not touched
+
+
+def test_the_opening_balance_can_be_edited_but_not_moved_to_or_past_the_next_balance():
+    store = store_with_loan(as_of="2025-12-31", outstanding_lakhs=58.1)
+    journal.add_loan_statement(store, NOW, loan_id=1, as_of="2026-11-14", outstanding_lakhs=50.73)
+    ids = opening_check_in(store)
+    journal.edit_check_in(store, NOW, ids=ids, as_of="2025-12-31", loan_balances={1: 58.0})        # amount only
+    ids = opening_check_in(store)
+    journal.edit_check_in(store, NOW, ids=ids, as_of="2025-12-15", loan_balances={1: 58.0})        # earlier
+    ids = opening_check_in(store, "2025-12-15")
+    for later in ("2026-11-30", "2027-03-01"):
+        with pytest.raises(journal.JournalError, match="opening balance can't move"):
+            journal.edit_check_in(store, NOW, ids=ids, as_of=later, loan_balances={1: 58.0})
+    assert [o["as_of"] for o in store.observations("loan")] == ["2025-12-15", "2026-11-14"]
+
+
+def test_adding_an_earlier_balance_makes_the_old_opening_an_ordinary_statement_that_can_go():
+    store = store_with_loan(as_of="2026-03-31", outstanding_lakhs=55.0)
+    journal.add_loan_statement(store, NOW, loan_id=1, as_of="2025-12-31", outstanding_lakhs=58.0)
+    journal.void_check_in(store, NOW, group_ids(store, "2026-03-31"))                   # no longer the opening
+    assert [o["amount_lakhs"] for o in store.observations("loan")] == [58.0]
+
+
+# -- Delete loan ------------------------------------------------------------------------
+
+
+def test_delete_loan_removes_the_loan_with_its_terms_balances_and_prepayments():
+    store = two_loans()
+    journal.add_loan_terms(store, NOW, loan_id=2, effective_from="2027-04-01", annual_rate_pct=12.0, emi_lakhs=0.5)
+    journal.add_loan_statement(store, NOW, loan_id=2, as_of="2026-12-31", outstanding_lakhs=15.0)
+    journal.add_prepayment(store, NOW, loan_id=2, entry_date="2026-11-10", amount_lakhs=3.0)
+    journal.add_prepayment(store, NOW, loan_id=1, entry_date="2026-11-11", amount_lakhs=1.0)
+    removed = journal.delete_loan(store, NOW, 2)
+    assert removed == {"terms": 2, "balances": 2, "prepayments": 1}
+    assert [l["name"] for l in store.loans()] == ["Home loan"]
+    assert [v["loan"]["id"] for v in journal.loan_views(store, TODAY, 2026, 2040)["loans"]] == [1]
+    assert store.observations("loan", 2) == [] and store.terms(2) == []
+    assert [e["ref_id"] for e in store.entries("prepayment")] == [1]                  # loan 1's prepayment is untouched
+    assert journal.loan_views(store, TODAY, 2026, 2040)["combined"] is None           # one loan left: no combined strip
+
+
+def test_a_deleted_loan_stops_counting_in_the_projection_and_cash_path():
+    store = store_with_loan(as_of="2025-12-31")
+    journal.add_prepayment(store, NOW, loan_id=1, entry_date="2026-03-10", amount_lakhs=5.0)
+    assert journal.projection_inputs(store, 2026, 2040, True)["loan_timeline"] is not None
+    journal.delete_loan(store, NOW, 1)
+    inputs = journal.projection_inputs(store, 2026, 2040, True)
+    assert inputs["loan_timeline"] is None
+    assert journal.loan_views(store, TODAY, 2026, 2040) == {"loans": [], "combined": None}
+
+
+def test_delete_loan_keeps_the_rows_as_removed_history_and_closes_the_loan():
+    store = store_with_loan()
+    journal.add_prepayment(store, NOW, loan_id=1, entry_date="2026-11-10", amount_lakhs=3.0)
+    journal.delete_loan(store, NOW, 1)
+    assert store._loans[0]["closed_at"] == NOW
+    assert all(t["voided_at"] == NOW for t in store._terms)
+    assert all(o["voided_at"] == NOW for o in store._observations)
+    assert all(e["voided_at"] == NOW for e in store._entries)
+
+
+def test_delete_loan_leaves_check_in_balances_that_are_not_the_loans():
+    store = store_with_loan(as_of="2026-10-31")
+    journal.record_check_in(store, NOW, as_of="2026-11-14", cash_lakhs=5.0, loan_balances={1: 49.0})
+    journal.delete_loan(store, NOW, 1)
+    history = journal.check_in_history(store)
+    assert [(g["as_of"], g["balances"]) for g in history] == [("2026-11-14", {"cash": 5.0})]
+
+
+def test_an_unknown_or_already_deleted_loan_cannot_be_deleted():
+    store = store_with_loan()
+    with pytest.raises(journal.JournalError, match="Unknown loan"):
+        journal.delete_loan(store, NOW, 99)
+    journal.delete_loan(store, NOW, 1)
+    with pytest.raises(journal.JournalError, match="Unknown loan"):
+        journal.delete_loan(store, NOW, 1)
+
+
+def test_a_new_loan_can_be_added_after_deleting_one_even_with_the_same_name():
+    store = store_with_loan()
+    journal.delete_loan(store, NOW, 1)
+    new_id = journal.setup_loan(store, NOW, name="Home loan", outstanding_lakhs=10.0, as_of="2026-01-01",
+                                annual_rate_pct=9.0, emi_lakhs=0.5)
+    assert [l["id"] for l in store.loans()] == [new_id] and new_id != 1
+    assert store.terms(1) == [] and len(store.terms(new_id)) == 1

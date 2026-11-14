@@ -14,6 +14,12 @@ function loanViews() {
     return (lastLoans && lastLoans.loans) || [];
 }
 
+// The observation ids that are each loan's OPENING balance (its earliest one): they can be
+// edited but only "Delete loan" removes them.
+function openingBalanceIds() {
+    return new Set(loanViews().filter((v) => v.observations.length).map((v) => v.observations[0].id));
+}
+
 function loanName(loanId) {
     const view = loanViews().find((v) => v.loan.id === Number(loanId));
     return view ? view.loan.name : `loan ${loanId}`;
@@ -154,8 +160,14 @@ function renderCheckIns(checkIns) {
         return `<td class="num"${title}>${lakhs(total)}</td>`;
     };
     let html = `<table><thead><tr><th>Date</th><th class="num">Cash</th><th class="num">Equity</th><th class="num">Debt</th><th class="num">Loan outstanding</th><th>Note</th><th></th></tr></thead><tbody>`;
+    const openings = openingBalanceIds();
     checkIns.forEach((entry) => {
-        html += `<tr><td>${escapeHtml(entry.as_of)}</td>${cell(entry, "cash")}${cell(entry, "equity")}${cell(entry, "debt")}${loanCell(entry)}<td>${escapeHtml(entry.note || "")}</td><td>${actionButtons("edit-checkin", "delete-checkin", escapeHtml(entry.as_of))}</td></tr>`;
+        const holdsOpening = Object.values(entry.ids).some((id) => openings.has(id));
+        const actions = actionButtons("edit-checkin", "delete-checkin", escapeHtml(entry.as_of), {
+            canDelete: !holdsOpening,
+            deleteTitle: holdsOpening ? "Holds a loan's opening balance: edit it, or use Delete loan" : "Delete",
+        });
+        html += `<tr><td>${escapeHtml(entry.as_of)}</td>${cell(entry, "cash")}${cell(entry, "equity")}${cell(entry, "debt")}${loanCell(entry)}<td>${escapeHtml(entry.note || "")}</td><td>${actions}</td></tr>`;
     });
     el.innerHTML = html + "</tbody></table>";
 }
@@ -170,8 +182,17 @@ function openCheckIn(group) {
         { name: "equity_lakhs", label: "Equity portfolio (Lakhs)", type: "number", value: value("equity") },
         { name: "debt_lakhs", label: "Debt portfolio (Lakhs)", type: "number", value: value("debt") },
     ];
+    const openings = openingBalanceIds();
     loans.forEach((loan) => {
-        fields.push({ name: `loan_${loan.id}`, label: `${loan.name} outstanding (Lakhs)`, type: "number", value: value(`loan_${loan.id}`) });
+        const key = `loan_${loan.id}`;
+        const isOpening = editing && group.ids[key] !== undefined && openings.has(group.ids[key]);
+        fields.push({
+            name: key,
+            label: `${loan.name} outstanding (Lakhs)${isOpening ? " - opening balance" : ""}`,
+            type: "number",
+            value: value(key),
+            required: isOpening,
+        });
     });
     fields.push({ name: "note", label: "Note (optional)", type: "text", value: editing ? group.note : undefined });
 
@@ -248,9 +269,12 @@ function loanBlock(view) {
     });
 
     html += `<h4>Terms history</h4><div class="journal-table table-container"><table><thead><tr><th>Effective from</th><th class="num">Rate %</th><th class="num">EMI (L / month)</th><th>Note</th><th></th></tr></thead><tbody>`;
-    view.terms.forEach((t) => {
-        const only = view.terms.length === 1;
-        const actions = actionButtons("edit-terms", "delete-terms", t.id, { canDelete: !only, deleteTitle: only ? "The loan's only terms record can't be deleted" : "Delete" });
+    view.terms.forEach((t, index) => {
+        const isOpening = index === 0;       // terms arrive oldest first
+        const actions = actionButtons("edit-terms", "delete-terms", t.id, {
+            canDelete: !isOpening,
+            deleteTitle: isOpening ? "Opening terms (they apply before the first change): edit them, or use Delete loan" : "Delete",
+        });
         html += `<tr><td>${escapeHtml(t.effective_from)}</td><td class="num">${lakhs(t.annual_rate_pct)}</td><td class="num">${lakhs(t.emi_lakhs)}</td><td>${escapeHtml(t.note || "")}</td><td>${actions}</td></tr>`;
     });
     html += `</tbody></table></div>`;
@@ -265,6 +289,10 @@ function loanBlock(view) {
     if (view.schedule.length > SCHEDULE_PREVIEW_ROWS) {
         html += `<div class="card-actions" style="justify-content:flex-start;margin-top:8px"><button class="btn btn-secondary" data-action="toggle-schedule" data-loan-id="${id}">${expanded ? "Show fewer months" : `Show all ${view.schedule.length} months`}</button></div>`;
     }
+    html += `<div class="loan-danger">
+        <button class="btn btn-danger" data-action="delete-loan" data-loan-id="${id}"><i class="fa-solid fa-trash"></i> Delete loan</button>
+        <span class="hint-text">For a loan entered by mistake. A loan that has been paid off ends by itself.</span>
+    </div>`;
     return html + `</div></div>`;
 }
 
@@ -471,6 +499,22 @@ document.addEventListener("click", async (e) => {
                 target.classList.toggle("expanded", open);
                 target.setAttribute("aria-expanded", String(open));
                 document.getElementById(`loanBody${key}`).classList.toggle("hidden", !open);
+                break;
+            }
+            case "delete-loan": {
+                const view = loanViews().find((v) => v.loan.id === Number(loanId));
+                const prepaid = view.prepayments.reduce((sum, p) => sum + p.amount_lakhs, 0);
+                const message = `Delete "${view.loan.name}"?\n\n`
+                    + `This removes the loan with its ${view.terms.length} rate/EMI record(s), ${view.observations.length} recorded balance(s) `
+                    + `and ${view.prepayments.length} prepayment(s) (${prepaid.toFixed(2)} L) from the Journal and the projection.\n\n`
+                    + `Use this only for a loan entered by mistake; a loan that has been paid off ends by itself.\n`
+                    + `It can't be undone from the app.`;
+                if (confirm(message)) {
+                    await api("DELETE", `/api/loans/${loanId}`);
+                    expandedLoans.delete(Number(loanId));
+                    expandedSchedules.delete(Number(loanId));
+                    await load();
+                }
                 break;
             }
             case "toggle-schedule": {

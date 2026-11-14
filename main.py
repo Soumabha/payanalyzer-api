@@ -436,6 +436,12 @@ def create_loan_terms(loan_id: int, payload: LoanTermsChange, store=Depends(get_
     return get_loans_view(store)
 
 
+@app.delete("/api/loans/{loan_id}")
+def delete_loan(loan_id: int, store=Depends(get_journal_store)):
+    journal.delete_loan(store, _now(), loan_id)
+    return get_loans_view(store)
+
+
 @app.put("/api/loan-terms/{terms_id}")
 def update_loan_terms(terms_id: int, payload: LoanTermsEdit, store=Depends(get_journal_store)):
     journal.edit_loan_terms(store, _now(), terms_id, **payload.dict())
