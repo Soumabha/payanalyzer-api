@@ -167,6 +167,24 @@ function openCheckIn(group) {
 
 // ------------------------------------------------------------------ loan ----
 
+// What the projection is doing about the loan while none is set up, built only
+// from what the assumptions actually say (their values come from /api/loan).
+function legacyLoanNotice(legacy) {
+    const emi = Number(legacy.annual_emi_lakhs);
+    const outstanding = Number(legacy.loan_outstanding_lakhs);
+    const endYear = Number(legacy.loan_end_year);
+    const hasEndYear = Number.isFinite(endYear) && endYear > 0;
+    const pitch = "Set one up to track interest vs principal, prepayments and the payoff date.";
+    if (!(Number.isFinite(emi) && emi > 0)) return `No loan is set up. ${pitch}`;
+    if (hasEndYear && endYear < new Date().getFullYear()) {
+        return `No loan is set up, and the flat EMI in your assumptions ended in ${endYear}, so the projection has no loan payments. ${pitch}`;
+    }
+    let text = `No loan is set up, so the projection assumes a flat EMI of ${lakhs(emi)} L a year`;
+    if (hasEndYear) text += ` until ${endYear}`;
+    if (Number.isFinite(outstanding) && outstanding > 0) text += ` (outstanding ${lakhs(outstanding)} L)`;
+    return `${text}. ${pitch}`;
+}
+
 function renderLoanActions(view) {
     const el = document.getElementById("loanActions");
     if (!view.loan) {
@@ -183,13 +201,7 @@ function renderLoan(view) {
     renderLoanActions(view);
     const el = document.getElementById("loanSection");
     if (!view.loan) {
-        const legacy = view.legacy || {};
-        el.innerHTML = `
-            <div class="notice info">
-                No loan is set up, so the projection uses your flat assumption
-                (outstanding ${lakhs(legacy.loan_outstanding_lakhs)} L, EMI ${lakhs(legacy.annual_emi_lakhs)} L a year, ending ${escapeHtml(legacy.loan_end_year)}).
-                Set the loan up to see interest vs principal, prepayments and the real payoff date.
-            </div>`;
+        el.innerHTML = `<div class="notice info">${legacyLoanNotice(view.legacy || {})}</div>`;
         return;
     }
     const s = view.summary;
