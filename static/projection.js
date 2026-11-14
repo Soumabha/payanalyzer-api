@@ -10,7 +10,7 @@ const PROJECTION_END_YEAR = 2070;
 const YEAR_SELECT_IDS = [
     "kids_expense_start_year", "kids_expense_end_year",
     "parents_expense_start_year", "parents_expense_end_year",
-    "loan_end_year", "retirement_year",
+    "retirement_year",
 ];
 
 function populateYearSelect(selectId, startYear, endYear) {
@@ -33,7 +33,6 @@ const ASSUMPTION_FIELDS = [
     "current_annual_expense_lakhs", "inflation_pct", "education_inflation_pct",
     "healthcare_inflation_pct", "kids_expense_start_year", "kids_school_start_age",
     "kids_expense_end_year", "parents_expense_start_year", "parents_expense_end_year",
-    "loan_outstanding_lakhs", "annual_emi_lakhs", "loan_end_year",
     "rental_income_lakhs", "rent_increase_pct", "current_annual_salary_lakhs",
     "salary_growth_pct", "retirement_year", "starting_cash_lakhs",
     "equity_portfolio_lakhs", "equity_return_pct", "debt_portfolio_lakhs", "debt_return_pct"
@@ -44,7 +43,7 @@ const ASSUMPTION_FIELDS = [
 const INTEGER_FIELDS = new Set([
     "kids_expense_start_year", "kids_school_start_age", "kids_expense_end_year",
     "parents_expense_start_year", "parents_expense_end_year",
-    "loan_end_year", "retirement_year"
+    "retirement_year"
 ]);
 
 // `group` drives both the visual column-section tinting and the grouped
@@ -115,16 +114,19 @@ async function loadAssumptionsIntoForm() {
     return data.assumptions;
 }
 
-function milestoneYearsFrom(assumptions) {
-    return new Set([
+function milestoneYearsFrom(assumptions, rows) {
+    const years = new Set([
         assumptions.kids_expense_start_year,
         assumptions.kids_expense_start_year + assumptions.kids_school_start_age,
         assumptions.kids_expense_end_year,
         assumptions.parents_expense_start_year,
         assumptions.parents_expense_end_year,
         assumptions.retirement_year,
-        assumptions.loan_end_year,
     ]);
+    // The year the last loan payment falls in, from the projection itself.
+    const loanYears = rows.filter((row) => row.emi_active).map((row) => row.year);
+    if (loanYears.length) years.add(Math.max(...loanYears));
+    return years;
 }
 
 function buildGroupHeaderRow(columns) {
@@ -456,8 +458,6 @@ function renderPortfolioChart(rows, planRows) {
 async function refreshProjection() {
     const assumptionsRes = await fetch("/api/fire-projection/assumptions");
     const assumptionsData = await assumptionsRes.json();
-    const milestones = milestoneYearsFrom(assumptionsData.assumptions);
-
     // Plan = assumptions only; the table and the main chart lines blend in
     // recorded spend for months that have already closed.
     const [planRes, actualRes] = await Promise.all([
@@ -466,7 +466,7 @@ async function refreshProjection() {
     ]);
     const planRows = await planRes.json();
     const rows = await actualRes.json();
-    renderProjectionTable(rows, milestones);
+    renderProjectionTable(rows, milestoneYearsFrom(assumptionsData.assumptions, rows));
     renderPortfolioChart(rows, planRows);
 }
 

@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from loans import build_timeline
 from projections import (
     DEFAULT_ASSUMPTIONS,
     PROJECTION_END_YEAR,
@@ -53,8 +54,6 @@ def _scenarios():
         "kids_expense_end_year": PROJECTION_START_YEAR + 30,
         "parents_expense_start_year": PROJECTION_START_YEAR + 8,
         "parents_expense_end_year": PROJECTION_START_YEAR + 25,
-        "annual_emi_lakhs": 9.5,
-        "loan_end_year": PROJECTION_START_YEAR + 6,
         "rental_income_lakhs": 4.0,
         "rent_increase_pct": 4.0,
         "current_annual_salary_lakhs": 30.0,
@@ -66,6 +65,14 @@ def _scenarios():
         "debt_portfolio_lakhs": 25.0,
         "debt_return_pct": 6.5,
     }
+    # A real amortizing loan (opened at the end of the year before the forecast,
+    # so it covers the whole window): the EMI ends partway through the horizon.
+    loan = build_timeline(
+        [{"as_of": f"{PROJECTION_START_YEAR - 1}-12-31", "amount_lakhs": 48.0}],
+        [{"effective_from": f"{PROJECTION_START_YEAR - 1}-12-31", "annual_rate_pct": 8.5, "emi_lakhs": 0.95}],
+        [{"date": f"{PROJECTION_START_YEAR + 2}-03-10", "amount_lakhs": 4.0}],
+        PROJECTION_START_YEAR, PROJECTION_END_YEAR,
+    )
     return {
         "default_assumptions": {
             "assumptions": dict(DEFAULT_ASSUMPTIONS),
@@ -79,6 +86,7 @@ def _scenarios():
                 PROJECTION_START_YEAR + 1: 10.0,
                 PROJECTION_START_YEAR + 14: 5.5,
             },
+            "loan_timeline": loan,
             "end_year": PROJECTION_END_YEAR - 5,
         },
     }

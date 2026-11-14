@@ -1,25 +1,35 @@
 """
 Pure, DB-free tests for the opt-in "actuals" mode of projections.run_projection().
 
-Scenario used throughout: default assumptions, so 2026 assumed total expense is
-12 (base) + 8 (EMI) = 20 lakhs, i.e. 20/12 per forecast month, and income is
-28 lakhs, i.e. 28/12 per month. "Today" is always injected.
+Scenario used throughout: default assumptions plus a loan paying a flat 0.5 lakh
+a month (a zero-rate loan, so the EMI never changes), so 2026 assumed total
+expense is 12 (base) + 6 (EMI) = 18 lakhs, i.e. 1.5 per forecast month, and
+income is 28 lakhs, i.e. 28/12 per month. "Today" is always injected.
 """
 
 from datetime import date
 
 import pytest
 
-from projections import DEFAULT_ASSUMPTIONS, PROJECTION_START_YEAR, run_projection
+from loans import build_timeline
+from projections import DEFAULT_ASSUMPTIONS, PROJECTION_START_YEAR, PROJECTION_END_YEAR, run_projection
 
 Y = PROJECTION_START_YEAR
-ASSUMED_YEAR_EXPENSE = 20.0
+EMI_MONTH = 0.5
+ASSUMED_YEAR_EXPENSE = 12.0 + 12 * EMI_MONTH
 FORECAST_MONTH = ASSUMED_YEAR_EXPENSE / 12
-EMI_MONTH = DEFAULT_ASSUMPTIONS["annual_emi_lakhs"] / 12
+
+# A loan that pays exactly EMI_MONTH every month for the whole window: zero rate,
+# so principal = EMI, and a balance big enough never to clear.
+LOAN = build_timeline(
+    [{"as_of": f"{Y - 1}-12-31", "amount_lakhs": 1000.0}],
+    [{"effective_from": f"{Y - 1}-12-31", "annual_rate_pct": 0.0, "emi_lakhs": EMI_MONTH}],
+    [], Y, PROJECTION_END_YEAR,
+)
 
 
 def run(spend, today, **kwargs):
-    return run_projection(DEFAULT_ASSUMPTIONS, actual_monthly_spend=spend, today=today, **kwargs)
+    return run_projection(DEFAULT_ASSUMPTIONS, actual_monthly_spend=spend, today=today, **{"loan_timeline": LOAN, **kwargs})
 
 
 def by_year(rows):
@@ -31,7 +41,7 @@ def statuses(row):
 
 
 def test_without_actuals_output_is_the_plain_forecast_with_no_extra_keys():
-    plain = run_projection(DEFAULT_ASSUMPTIONS)
+    plain = run_projection(DEFAULT_ASSUMPTIONS, loan_timeline=LOAN)
     for row in plain:
         assert "months" not in row and "expense_source" not in row
 
@@ -39,7 +49,7 @@ def test_without_actuals_output_is_the_plain_forecast_with_no_extra_keys():
 def test_empty_actuals_leave_every_number_identical_to_the_plain_forecast():
     """No recorded spend anywhere -> every past/current month falls back to the
     forecast, so all the numbers equal the plain run (only extra keys differ)."""
-    plain = by_year(run_projection(DEFAULT_ASSUMPTIONS))
+    plain = by_year(run_projection(DEFAULT_ASSUMPTIONS, loan_timeline=LOAN))
     blended = by_year(run({}, date(Y, 11, 13)))
     for year, plain_row in plain.items():
         for key, value in plain_row.items():
@@ -121,7 +131,7 @@ def test_when_the_year_rolls_over_the_previous_year_becomes_actual_with_no_code_
 
 def test_future_years_keep_the_assumed_expense_chain_untouched():
     """Actual spend far above the assumption must not re-base later years."""
-    plain = by_year(run_projection(DEFAULT_ASSUMPTIONS))
+    plain = by_year(run_projection(DEFAULT_ASSUMPTIONS, loan_timeline=LOAN))
     spend = {f"{Y}-{m:02d}": 5.0 for m in range(1, 11)}
     blended = by_year(run(spend, date(Y, 11, 13)))
     for year in range(Y + 1, 2040):
@@ -132,7 +142,7 @@ def test_future_years_keep_the_assumed_expense_chain_untouched():
 
 
 def test_current_year_actuals_flow_into_later_years_only_through_cash_balances():
-    plain = by_year(run_projection(DEFAULT_ASSUMPTIONS))
+    plain = by_year(run_projection(DEFAULT_ASSUMPTIONS, loan_timeline=LOAN))
     spend = {f"{Y}-{m:02d}": 5.0 for m in range(1, 11)}
     blended = by_year(run(spend, date(Y, 11, 13)))
     assert blended[Y]["total_expense"] > plain[Y]["total_expense"]
@@ -167,3 +177,11 @@ def test_every_month_splits_into_non_loan_spend_and_loan_payment_that_add_up_to_
     assert january["spend"] == 0.99                      # exactly what the expense records hold
     assert january["loan_payment"] == pytest.approx(EMI_MONTH, abs=1e-4)
     assert row["months"][2]["spend"] == pytest.approx(FORECAST_MONTH - EMI_MONTH, abs=2e-4)  # no_data month
+
+
+def test_without_any_loan_an_actual_month_is_just_the_recorded_spend():
+    row = by_year(run_projection(DEFAULT_ASSUMPTIONS, actual_monthly_spend={f"{Y}-01": 1.5}, today=date(Y, 2, 20)))[Y]
+    january = row["months"][0]
+    assert (january["spend"], january["loan_payment"], january["expense"]) == (1.5, 0.0, 1.5)
+    assert row["months"][5]["expense"] == pytest.approx(12.0 / 12, abs=1e-4)      # a forecast month: base / 12, no loan
+    assert row["emi_amount"] == 0.0 and row["emi_active"] is False

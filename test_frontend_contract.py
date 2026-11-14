@@ -221,3 +221,14 @@ def test_the_projection_table_has_no_loan_detail_columns():
     keys = re.findall(r'\{\s*key:\s*"(\w+)"', _js_block("COLUMN_DEFS"))
     assert keys and not [k for k in keys if k.startswith("loan_")]
     assert 'group: "loan"' not in PROJECTION_JS
+
+
+def test_the_assumptions_api_model_accepts_exactly_the_engines_assumption_fields():
+    body = re.search(r"class AssumptionsUpdate\(BaseModel\):\n((?:    .+\n)+)", MAIN_PY).group(1)
+    assert re.findall(r"^    (\w+):", body, re.MULTILINE) == ASSUMPTION_FIELDS
+
+
+def test_the_retired_flat_emi_fields_are_gone_from_the_projection_page():
+    retired = ("annual_emi_lakhs", "loan_end_year", "loan_outstanding_lakhs")
+    for name in retired:
+        assert name not in PROJECTION_JS and name not in PROJECTION_HTML and name not in JOURNAL_JS, name

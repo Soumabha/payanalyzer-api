@@ -35,9 +35,6 @@ ASSUMPTION_FIELDS = [
     "kids_expense_end_year",
     "parents_expense_start_year",
     "parents_expense_end_year",
-    "loan_outstanding_lakhs",
-    "annual_emi_lakhs",
-    "loan_end_year",
     "rental_income_lakhs",
     "rent_increase_pct",
     "current_annual_salary_lakhs",
@@ -62,9 +59,6 @@ DEFAULT_ASSUMPTIONS = {
     "kids_expense_end_year": PROJECTION_END_YEAR,
     "parents_expense_start_year": 2037,
     "parents_expense_end_year": PROJECTION_END_YEAR,
-    "loan_outstanding_lakhs": 40.0,
-    "annual_emi_lakhs": 8.0,
-    "loan_end_year": 2031,
     "rental_income_lakhs": 3.0,
     "rent_increase_pct": 5.0,
     "current_annual_salary_lakhs": 25.0,
@@ -112,8 +106,7 @@ def _blend_year(
     `loan_outflow_months` is the 12 monthly loan payments (EMI + prepayment)
     already inside the assumed total. A forecast month spends the non-loan part
     of the assumed total evenly (/12) plus that month's own loan payment; an
-    actual month is recorded spend plus that month's loan payment. With a flat
-    EMI this is simply assumed total / 12 for forecast months. Income is
+    actual month is recorded spend plus that month's loan payment. Income is
     always the assumed annual figure / 12 (there is no income data source).
     """
     non_loan_month = (assumed_total_expense - sum(loan_outflow_months)) / 12
@@ -379,9 +372,9 @@ def run_projection(
     extra keys. `today` is injectable for tests and defaults to date.today().
 
     Journal inputs (each optional; omitted -> exactly the plain forecast):
-      loan_timeline - monthly rows from loans.build_timeline(). When non-empty
-                      it replaces the flat annual EMI: each year's EMI and
-                      prepayments come from the schedule, rows gain
+      loan_timeline - monthly rows from loans.build_timeline(). Without it the
+                      projection has no loan payments. Each year's EMI and
+                      prepayments come from the schedule, and rows gain
                       loan_interest / loan_principal / loan_prepayment /
                       loan_balance_end (detail only: the table shows none of
                       them). emi_amount is the year's EMI plus any prepayment,
@@ -437,7 +430,6 @@ def run_projection(
     kids_edu_start_year = kids_start_year + assumptions["kids_school_start_age"]
     parents_start_year = assumptions["parents_expense_start_year"]
     parents_end_year = assumptions["parents_expense_end_year"]
-    loan_end_year = assumptions["loan_end_year"]
     retirement_year = assumptions["retirement_year"]
 
     rows = []
@@ -508,8 +500,10 @@ def run_projection(
                 parents_expense = parents_prev * (1 + healthcare_inflation)
             parents_prev = parents_expense
 
-        # F/G - EMI. With a loan schedule (journal) the amounts come from the
-        # month-by-month amortization; otherwise the flat annual assumption.
+        # F/G - EMI. Loans live in the journal: with a loan schedule the amounts
+        # come from its month-by-month amortization; without one there is no
+        # loan payment at all (months before a loan's first recorded balance
+        # carry none either).
         if loan_enabled:
             loan_year = summarize_loan_year(loan_timeline, year)
             # EMI Amt is every loan payment of the year, a prepayment included,
@@ -519,10 +513,10 @@ def run_projection(
             emi_active = emi_amount > 0
             loan_outflow_months = monthly_cash_outflow(loan_timeline, year)
         else:
-            emi_active = year <= loan_end_year
-            emi_amount = assumptions["annual_emi_lakhs"] if emi_active else 0.0
+            emi_active = False
+            emi_amount = 0.0
             loan_prepayment = 0.0
-            loan_outflow_months = [emi_amount / 12] * 12
+            loan_outflow_months = [0.0] * 12
 
         # H - Total Expense
         total_expense = base_expense + kids_expense + parents_expense + emi_amount

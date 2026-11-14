@@ -33,12 +33,11 @@ def plain():
 # -- loan schedule --------------------------------------------------------------
 
 
-def test_loan_replaces_the_flat_emi_and_ignores_the_legacy_end_year():
+def test_the_loan_schedule_drives_the_emi_for_as_long_as_it_runs():
     rows = by_year(run_projection(DEFAULT_ASSUMPTIONS, loan_timeline=loan_timeline()))
     assert rows[Y]["emi_amount"] == pytest.approx(12 * EMI, abs=1e-3)
     assert rows[Y]["emi_active"] is True
-    # Legacy assumption: loan_end_year=2031, so the plain run has no EMI after it.
-    assert plain()[2033]["emi_amount"] == 0.0
+    assert plain()[Y]["emi_amount"] == 0.0 and plain()[2033]["emi_active"] is False       # no loan, no EMI
     assert rows[2033]["emi_amount"] == pytest.approx(12 * EMI, abs=1e-3)  # 10-year loan runs to 2035
     assert rows[2036]["emi_amount"] == 0.0 and rows[2036]["emi_active"] is False
 
@@ -98,8 +97,7 @@ def test_loan_balance_is_unknown_for_years_before_the_first_observation():
     )
     rows = by_year(run_projection(DEFAULT_ASSUMPTIONS, loan_timeline=timeline))
     assert rows[Y]["loan_balance_end"] is None
-    # Nothing is attributed to a loan before it was entered (journal.projection_inputs
-    # fills those months with the old flat-EMI assumption instead).
+    # Nothing is attributed to a loan before its first recorded balance.
     assert rows[Y]["emi_amount"] == 0.0
     assert rows[Y]["loan_interest"] == 0.0
     # the loan is entered in March of Y+1: its first month and the nine after it
@@ -302,7 +300,7 @@ def test_observations_and_transfers_need_actuals_mode():
 
 
 def shortfall_assumptions():
-    return {**DEFAULT_ASSUMPTIONS, "current_annual_expense_lakhs": 60.0, "annual_emi_lakhs": 0.0,
+    return {**DEFAULT_ASSUMPTIONS, "current_annual_expense_lakhs": 60.0,
             "current_annual_salary_lakhs": 0.0, "rental_income_lakhs": 0.0, "starting_cash_lakhs": 0.0,
             "debt_portfolio_lakhs": 10.0, "equity_portfolio_lakhs": 50.0, "equity_return_pct": 12.0,
             "debt_return_pct": 6.0, "retirement_year": Y}

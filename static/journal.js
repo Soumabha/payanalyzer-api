@@ -8,7 +8,7 @@ const SCHEDULE_PREVIEW_ROWS = 24;
 const expandedSchedules = new Set();   // loan ids whose full schedule is open
 const expandedLoans = new Set();       // loan ids whose section is open (all start collapsed)
 let lastJournal = null;
-let lastLoans = null;                  // {loans: [view...], combined, legacy}
+let lastLoans = null;                  // {loans: [view...], combined}
 
 function loanViews() {
     return (lastLoans && lastLoans.loans) || [];
@@ -198,23 +198,8 @@ function openCheckIn(group) {
 
 // ----------------------------------------------------------------- loans ----
 
-// What the projection is doing about loans while none is set up, built only
-// from what the assumptions actually say (their values come from /api/loans).
-function legacyLoanNotice(legacy) {
-    const emi = Number(legacy.annual_emi_lakhs);
-    const outstanding = Number(legacy.loan_outstanding_lakhs);
-    const endYear = Number(legacy.loan_end_year);
-    const hasEndYear = Number.isFinite(endYear) && endYear > 0;
-    const pitch = "Add them to track interest vs principal, prepayments and the payoff date.";
-    if (!(Number.isFinite(emi) && emi > 0)) return `No loan is set up. ${pitch}`;
-    if (hasEndYear && endYear < new Date().getFullYear()) {
-        return `No loan is set up, and the flat EMI in your assumptions ended in ${endYear}, so the projection has no loan payments. ${pitch}`;
-    }
-    let text = `No loan is set up, so the projection assumes a flat EMI of ${lakhs(emi)} L a year`;
-    if (hasEndYear) text += ` until ${endYear}`;
-    if (Number.isFinite(outstanding) && outstanding > 0) text += ` (outstanding ${lakhs(outstanding)} L)`;
-    return `${text}. ${pitch}`;
-}
+// Shown while no loan is set up: the projection has no loan payments until one is added.
+const NO_LOAN_NOTICE = "No loan is set up, so the projection has no loan payments. Add one to track interest vs principal, prepayments and the payoff date. Enter its balance dated at the start of the year (or earlier) so it covers the whole forecast.";
 
 function renderLoanActions(data) {
     const el = document.getElementById("loanActions");
@@ -287,7 +272,7 @@ function renderLoans(data) {
     renderLoanActions(data);
     const el = document.getElementById("loanSection");
     if (!data.loans.length) {
-        el.innerHTML = `<div class="notice info">${legacyLoanNotice(data.legacy || {})}</div>`;
+        el.innerHTML = `<div class="notice info">${NO_LOAN_NOTICE}</div>`;
         return;
     }
     let html = "";
@@ -303,19 +288,15 @@ function currentTerms(view) {
 
 function openLoanSetup() {
     const existing = loanViews().length;
-    const legacy = (lastLoans && lastLoans.legacy) || {};
-    // The flat-EMI assumptions describe the loans in total, so they only seed the first loan.
-    const seed = existing === 0;
-    const monthlyEmi = seed && legacy.annual_emi_lakhs ? Math.round((legacy.annual_emi_lakhs / 12) * 10000) / 10000 : null;
     openModal({
         title: existing ? "Add another loan" : "Set up loan",
-        intro: "Enter the balance your bank shows today, the annual interest rate, and either the monthly EMI or the months remaining (the other is worked out).",
+        intro: "Enter the balance your bank showed at the start of the year (or when the loan began), dated then, plus the annual interest rate and either the monthly EMI or the months remaining (the other is worked out). Add today's balance afterwards with 'Update from statement'.",
         fields: [
             { name: "name", label: "Name", type: "text", value: existing ? `Loan ${existing + 1}` : "Home loan", required: true },
-            { name: "outstanding_lakhs", label: "Outstanding principal (Lakhs)", type: "number", value: seed ? legacy.loan_outstanding_lakhs : undefined, required: true },
+            { name: "outstanding_lakhs", label: "Outstanding principal (Lakhs)", type: "number", required: true },
             { name: "as_of", label: "As of", type: "date", value: todayLocal(), max: todayLocal(), required: true },
             { name: "annual_rate_pct", label: "Annual interest rate (%)", type: "number", required: true },
-            { name: "emi_lakhs", label: "Monthly EMI (Lakhs)", type: "number", step: "0.0001", value: monthlyEmi },
+            { name: "emi_lakhs", label: "Monthly EMI (Lakhs)", type: "number", step: "0.0001" },
             { name: "remaining_months", label: "Or months remaining", type: "number", step: "1" },
         ],
         submitLabel: "Create loan",

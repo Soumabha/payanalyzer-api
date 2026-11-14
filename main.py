@@ -52,9 +52,6 @@ class AssumptionsUpdate(BaseModel):
     kids_expense_end_year: Optional[int] = None
     parents_expense_start_year: Optional[int] = None
     parents_expense_end_year: Optional[int] = None
-    loan_outstanding_lakhs: Optional[float] = None
-    annual_emi_lakhs: Optional[float] = None
-    loan_end_year: Optional[int] = None
     rental_income_lakhs: Optional[float] = None
     rent_increase_pct: Optional[float] = None
     current_annual_salary_lakhs: Optional[float] = None
@@ -400,10 +397,7 @@ def get_fire_projection(
     journal_store=Depends(get_journal_store),
 ):
     assumptions = get_assumptions()
-    inputs = journal.projection_inputs(
-        journal_store, start_year, end_year, include_actuals=actuals,
-        legacy={"annual_emi_lakhs": assumptions["annual_emi_lakhs"], "loan_end_year": assumptions["loan_end_year"]},
-    )
+    inputs = journal.projection_inputs(journal_store, start_year, end_year, include_actuals=actuals)
     actual_monthly_spend = None
     if actuals:
         store = SqliteExpenseStore()
@@ -427,12 +421,7 @@ def get_fire_projection(
 
 @app.get("/api/loans")
 def get_loans_view(store=Depends(get_journal_store)):
-    view = journal.loan_views(store, datetime.now().date(), PROJECTION_START_YEAR, PROJECTION_END_YEAR)
-    view["legacy"] = {
-        key: value for key, value in get_assumptions().items()
-        if key in ("loan_outstanding_lakhs", "annual_emi_lakhs", "loan_end_year")
-    }
-    return view
+    return journal.loan_views(store, datetime.now().date(), PROJECTION_START_YEAR, PROJECTION_END_YEAR)
 
 
 @app.post("/api/loans")

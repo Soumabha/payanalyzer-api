@@ -17,6 +17,7 @@ Run with: python3 -m pytest test_projections.py -v
 
 import pytest
 
+from loans import build_timeline
 from projections import (
     DEFAULT_ASSUMPTIONS,
     PROJECTION_END_YEAR,
@@ -28,7 +29,7 @@ from projections import (
 def disabled_assumptions(**overrides):
     """
     A complete, valid assumptions dict with every optional feature pushed
-    out of range or zeroed out (kids/parents/EMI never trigger, no income,
+    out of range or zeroed out (kids/parents never trigger, no loan, no income,
     no starting balances/growth) - each test overrides only the handful of
     fields it's actually exercising, so tests can't accidentally interfere
     with each other via a shared "realistic" baseline.
@@ -43,9 +44,6 @@ def disabled_assumptions(**overrides):
         "kids_expense_end_year": PROJECTION_END_YEAR + 1,
         "parents_expense_start_year": PROJECTION_END_YEAR + 1,
         "parents_expense_end_year": PROJECTION_END_YEAR + 1,
-        "loan_outstanding_lakhs": 0.0,
-        "annual_emi_lakhs": 0.0,
-        "loan_end_year": PROJECTION_START_YEAR - 1,
         "rental_income_lakhs": 0.0,
         "rent_increase_pct": 0.0,
         "current_annual_salary_lakhs": 0.0,
@@ -239,27 +237,41 @@ def test_salary_stops_exactly_at_retirement_year():
     assert by_year[retirement + 1]["salary"] == 0.0
 
 
-@pytest.mark.parametrize(
-    "loan_end_offset,emi_amount",
-    [
-        (5, 8.0),  # active for several years, a "normal" EMI
-        (0, 3.0),  # active for exactly one year - the start year itself
-        (-1, 8.0),  # loan_end_year before start_year - inactive for the whole horizon
-    ],
-)
-def test_emi_active_flag_and_amount_track_loan_end_year(loan_end_offset, emi_amount):
-    start = PROJECTION_START_YEAR
-    loan_end = start + loan_end_offset
-    assumptions = disabled_assumptions(annual_emi_lakhs=emi_amount, loan_end_year=loan_end)
-    rows = run_projection(assumptions, start_year=start, end_year=start + 6)
+def zero_rate_loan(balance, emi, opened="2025-12-31"):
+    """A schedule that pays exactly `emi` a month until `balance` is cleared (zero
+    rate, so principal = EMI), opened at the end of the month given."""
+    return build_timeline(
+        [{"as_of": opened, "amount_lakhs": balance}],
+        [{"effective_from": opened, "annual_rate_pct": 0.0, "emi_lakhs": emi}],
+        [], PROJECTION_START_YEAR, PROJECTION_START_YEAR + 6,
+    )
 
-    for row in rows:
-        if row["year"] <= loan_end:
-            assert row["emi_active"] is True
-            assert row["emi_amount"] == pytest.approx(emi_amount)
-        else:
-            assert row["emi_active"] is False
-            assert row["emi_amount"] == 0.0
+
+def test_without_a_loan_there_is_no_emi_in_any_year():
+    rows = run_projection(disabled_assumptions(), start_year=PROJECTION_START_YEAR, end_year=PROJECTION_START_YEAR + 6)
+    assert all(row["emi_active"] is False and row["emi_amount"] == 0.0 for row in rows)
+
+
+def test_emi_runs_for_exactly_as_long_as_the_loan_does():
+    start = PROJECTION_START_YEAR
+    timeline = zero_rate_loan(balance=18.0, emi=1.0)            # 18 monthly payments: all of year 1, half of year 2
+    rows = {r["year"]: r for r in run_projection(disabled_assumptions(), start_year=start, end_year=start + 6,
+                                                  loan_timeline=timeline)}
+    assert (rows[start]["emi_active"], rows[start]["emi_amount"]) == (True, pytest.approx(12.0))
+    assert (rows[start + 1]["emi_active"], rows[start + 1]["emi_amount"]) == (True, pytest.approx(6.0))
+    assert (rows[start + 2]["emi_active"], rows[start + 2]["emi_amount"]) == (False, 0.0)
+    assert rows[start + 1]["loan_balance_end"] == 0.0
+
+
+def test_a_loan_that_starts_part_way_through_the_forecast_pays_nothing_before_its_first_month():
+    start = PROJECTION_START_YEAR
+    timeline = zero_rate_loan(balance=100.0, emi=1.0, opened=f"{start}-06-30")
+    rows = {r["year"]: r for r in run_projection(disabled_assumptions(), start_year=start, end_year=start + 2,
+                                                  loan_timeline=timeline)}
+    # June (its first month, scheduled EMI without a split) through December: 7 payments, none before.
+    assert rows[start]["emi_amount"] == pytest.approx(7.0)
+    assert rows[start]["loan_balance_end"] == pytest.approx(100.0 - 6.0)
+    assert rows[start + 1]["emi_amount"] == pytest.approx(12.0)
 
 
 def test_withdrawal_waterfall_drains_debt_before_equity_on_shortfall():

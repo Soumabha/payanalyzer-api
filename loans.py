@@ -168,9 +168,8 @@ def build_timeline(
     The loan's monthly rows for [start_year, end_year].
 
     Months before the first observation are from before the loan was entered:
-    no balance, no EMI attributed to the loan (what was assumed to be paid then
-    is the caller's call), marked `estimated` (closing None) - though a
-    prepayment dated then is still a real cash outflow. The observation's own
+    no balance and no EMI attributed to the loan, marked `estimated` (closing
+    None) - though a prepayment dated then is still a real cash outflow. The observation's own
     month pays the scheduled EMI with no interest/principal split, and its
     balance is the observed one less any prepayment made after it. From each observation on, the schedule is computed forward
     until the next observation re-bases it; `drift` on that row is what the

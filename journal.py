@@ -485,58 +485,33 @@ def journal_entries(store, today: date) -> list[dict]:
     return sorted(entries, key=lambda e: (e["entry_date"], e["id"]), reverse=True)
 
 
-def _legacy_monthly_emi(legacy, year: int) -> float:
-    """The old flat EMI assumption as a monthly figure for `year` (0 after its end year)."""
-    if not legacy or year > legacy.get("loan_end_year", 0):
-        return 0.0
-    return legacy.get("annual_emi_lakhs", 0.0) / 12
-
-
-def _with_legacy_before_loans(timeline, first_loan_month, legacy):
-    """Months before the earliest loan entry keep what the assumptions said (the
-    flat EMI); from the month a loan is entered the loans' own schedules take
-    over and carry on from there."""
-    if not timeline:
-        return timeline
-    return [
-        {**row, "emi_paid": _legacy_monthly_emi(legacy, int(row["month"][:4]))}
-        if row["month"] < first_loan_month else row
-        for row in timeline
-    ]
-
-
-def projection_inputs(store, start_year, end_year, include_actuals: bool, legacy=None) -> dict:
+def projection_inputs(store, start_year, end_year, include_actuals: bool) -> dict:
     """Everything run_projection() takes from the journal. With an empty
     journal every value is empty/None, so the projection is the plain forecast.
 
     The loans are merged into ONE monthly timeline (their EMI, interest,
     principal, prepayments and balances summed), so the projection has the same
-    rows however many loans there are. Months before the earliest loan entry
-    use the old flat-EMI assumption (`legacy`: annual_emi_lakhs, loan_end_year),
-    so entering a loan changes nothing before it.
+    rows however many loans there are. A loan contributes nothing before its
+    first recorded balance, so enter its opening balance dated at the start of
+    the forecast (or earlier) for it to cover the whole window.
 
     include_actuals=False is the PLAN view: extra income (planned or received)
-    and each loan as set up (opening balance + terms changes, no prepayments, no
-    later statement balances). include_actuals=True adds what really happened:
-    prepayments, later loan balances, cash/equity/debt check-ins and
-    invest/withdraw transfers.
+    and each loan as set up: its EARLIEST recorded balance (its opening) plus
+    its terms changes, with no prepayments and no later statement balances.
+    include_actuals=True adds what really happened: prepayments, later loan
+    balances, cash/equity/debt check-ins and invest/withdraw transfers.
     """
     timelines = []
-    first_loan_month = None
     for loan in get_loans(store):
         inputs = loan_inputs(store, loan)
         if inputs is None:
             continue
         _, terms, observations, prepayments = inputs
         if not include_actuals:
-            observations = [o for o in observations if o["source"] == "loan_setup"] or observations[:1]
+            observations = observations[:1]          # sorted by date: the opening
             prepayments = []
-        started = min(o["as_of"][:7] for o in observations)
-        first_loan_month = started if first_loan_month is None else min(first_loan_month, started)
         timelines.append(build_timeline(observations, terms, prepayments, start_year, end_year))
     merged = merge_timelines(timelines)
-    if merged:
-        merged = _with_legacy_before_loans(merged, first_loan_month, legacy)
     return {
         "extra_income_by_year": extra_income_by_year(store),
         "loan_timeline": merged or None,
